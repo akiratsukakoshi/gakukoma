@@ -1,0 +1,75 @@
+audio:
+  record_device: "hw:3,0"      # USBマイク (card 3) ← arecordフォールバック用
+  sounddevice_device: 1         # sounddevice用インデックス（sd.query_devices()の番号）
+  playback_device: "plughw:2,0" # MAX98357A スピーカー (card 2)
+  sample_rate: 48000
+  channels: 1
+  format: "S16_LE"
+  record_duration_max: 30
+  silence_threshold: 500
+
+stt:
+  model: "small"
+  language: "ja"
+  compute_type: "int8"
+  script: "/home/tukapontas/gakukoma/stt/listen_voice.py"
+
+tts:
+  engine: openjtalk
+  model: /home/tukapontas/gakukoma/tts/models/mei_happy.htsvoice
+  dic: /var/lib/mecab/dic/open-jtalk/naist-jdic
+  # タチコマ声質チューニングパラメータ
+  speed: 1.1        # 話速（1.0が標準）
+  pitch: 2.0        # 声の高さ（fm: 2.0〜2.5で子供らしい声）
+  intonation: 1.3   # 抑揚の幅（jf: 1.3〜1.5で感情豊かに）
+  output_wav: /tmp/gakukoma_tts_output.wav
+
+openclaw:
+  gateway_url: "http://localhost:18789"
+  gateway_token: "7a1300c2a33a4ecb8473857702f2bd7f1fa83e947ce89843"
+  timeout_sec: 30
+  max_history_turns: 6
+
+temp:
+  audio_file: "/tmp/gakukoma_input.wav"
+
+# カメラ設定（Phase 2追加）
+camera:
+  device: 0               # /dev/video0
+  width: 640
+  height: 480
+  capture_file: "/tmp/gakukoma_capture.jpg"
+
+# Anthropic API設定（Phase 2追加）
+anthropic:
+  model: "claude-haiku-4-5-20251001"
+  # APIキーはOPENAI_API_KEY環境変数ではなく ~/.openclaw/agents/main/agent/auth-profiles.json から取得
+
+# サーボ設定（Phase 2追加）
+servo:
+  pan_channel: 0        # PCA9685 ch0 = パン（左右）
+  tilt_channel: 1       # PCA9685 ch1 = チルト（上下）
+  pan_min: 10           # パン最小角度（左端。0°はギリギリすぎるため余裕を持たせる）
+  pan_max: 160          # パン最大角度（右端。170°以上はPi5本体に接触するため制限）
+  pan_offset: 0         # パン物理オフセット補正（正=右方向に補正、負=左方向に補正）
+  tilt_min: 60          # チルト最小角度（論理上端。physical = tilt_min+tilt_max-logical で物理変換）
+  tilt_max: 120         # チルト最大角度（論理下端。物理120°でボディ干渉のため120°に制限）
+  tilt_invert: true     # DS3218換装後、チルト物理方向が反転しているため true に設定
+  pan_gain: -0.1        # 1pxあたりの補正角度（Gemini報告に基づき負値）
+  tilt_gain: 0.1        # 1pxあたりの補正角度（tilt_invertで物理反転を吸収するため正値）
+  convergence_px: 30    # 収束判定の許容誤差（ピクセル）
+  max_iterations: 20    # 最大追跡ループ回数
+  loop_interval: 0.1    # ループ間隔（秒）
+
+# ウェイクワード設定（Phase 2.1追加）
+wakeword:
+  enabled: true              # falseにするとEnterキーモードに戻せる
+  chunk_duration: 2.5        # wakeword検出用の録音チャンク長（秒）
+  volume_threshold: 200        # 平均音量がこれ以上で録音開始（無音:50, 発声:400-700）
+  
+# VAD設定（Phase 2.1追加）
+vad:
+  enabled: true              # falseにするとEnterキーモードに戻せる
+  silence_threshold: 1.5     # 無音継続でSTT渡しとみなす秒数
+  aggressiveness: 3          # webrtcvad感度（0〜3、3が最高感度でノイズ誤トリガー抑制）
+  min_speech_duration: 0.8   # これ以下は無音として無視（誤検出防止）
