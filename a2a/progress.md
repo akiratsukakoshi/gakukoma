@@ -3,7 +3,7 @@
 > **ClaudeCode管理ファイル。セッション開始時に必ず確認すること。**
 > 完了報告書（`_completed.md`）が届いたら本ファイルを更新する。
 
-最終更新: 2026-04-11（ジェスチャー修正完了報告受領: Thinking動作スロー化 + Listening移行時停止）
+最終更新: 2026-04-14（GAKUKOMA Brain実装完了報告受領: voice_loop→brain直接API呼び出しに移行）
 
 ---
 
@@ -75,7 +75,7 @@
 |---|---|---|---|---|
 | workspaceのMDファイル整理・統合（AGENTS.md縮小・IDENTITY.md削除等） | ClaudeCode | ✅ 完了 | - | - |
 | レスポンス速度改善（ローリングウィンドウ + プロンプトキャッシュ） | Antigravity | ✅ 完了 | `coding/20260321_phase2_3_response_speed_implementation.md` | `coding/20260321_phase2_3_response_speed_completed.md` |
-| ビジュアル認識改善（see_around視点修正 + survey_room実装） | コーディング担当AI | ⬜ 未着手 | `coding/20260321_phase2_3_visual_recognition_implementation.md` | - |
+| ビジュアル認識改善（see_around視点修正 + survey_room実装） | コーディング担当AI | ✅ 完了 | `coding/20260321_phase2_3_visual_recognition_implementation.md` | `coding/20260321_phase2_3_visual_recognition_completed.md` |
 | voice_loop 4ステートマシン化（ACTIVEモード常時リスニング + TTS混線防止） | Antigravity | ✅ 完了 | `coding/20260321_voiceloop_4state_implementation.md` | `coding/20260321_voiceloop_4state_completed.md` |
 | LEDによるself-state可視化（RGB LED配線） | Gemini | ✅ 完了 | `hardware/20260321_led_selfstate_implementation.md` | `hardware/20260321_led_selfstate_completed.md` |
 | LEDによるself-state可視化（コーディング実装） | Antigravity | ✅ 完了 | `coding/20260325_led_selfstate_coding_implementation.md` | `coding/20260325_led_selfstate_coding_completed.md` |
@@ -91,7 +91,7 @@
 | タスク | 担当 | 状態 | 指示書 | 完了報告書 |
 |---|---|---|---|---|
 | GAKUKOMA Brain 設計・指示書作成 | ClaudeCode | ✅ 完了 | `coding/20260410_gakukoma_brain_implementation.md` | - |
-| `gakukoma_brain.py` 実装 + voice_loop.py置き換え | Antigravity | ⬜ 未着手 | `coding/20260410_gakukoma_brain_implementation.md` | - |
+| `gakukoma_brain.py` 実装 + voice_loop.py置き換え | Claudeサブエージェント | ✅ 完了 | `coding/20260410_gakukoma_brain_implementation.md` | `coding/20260410_gakukoma_brain_completed.md` |
 
 #### ⚠️ ロールバック手順（新フレームワークが動作しない場合）
 
@@ -199,8 +199,7 @@ rm -rf /home/tukapontas/gakukoma/brain/
 - **✅ few-shot priming + ローカル会話履歴注入完了（2026-03-25）**: `voice_loop.py` に初回ターンのみfew-shot priming付加・2ターン目以降は最大5ターン分のローカル会話履歴注入を実装。定型フレーズ乱発・ユーザー発言繰り返し問題を解消。セッションリセット時に履歴・フラグ初期化確認。T-1〜T-4全合格。
 - **✅ 定型フレーズ癖・冗長発話の追加修正（2026-03-25）**: 実機検証で依然として発話繰り返し・冗長応答が残存していたため3点修正。①`memory/2026-03-24.md` の「へぇ〜、ワクワクしちゃう！」を中立記述に書き換え。②`SOUL.md` 末尾に「応答の大原則（最重要）」セクションを追加（2〜3文以内・NG/OK例）。③`AGENTS.md` にmemory記録フォーマットと会話返答を混同しない注記を追加。さらに根本原因として **systemプロンプトより会話中の直接指示が効く** ことが判明したため、`voice_loop.py` の `_PRIMING_EXAMPLES` を「参考例の提示」から「ガクチョがルールを言い渡しがくこまが同意する会話形式」に変更。実機で完全改善を確認。
 - **✅ ジェスチャー修正完了（2026-04-11）**: Thinkingパターンを大きな視点移動（右斜め上→左斜め上→右下、2.0〜2.5秒）に再設計。認識失敗時にlistening復帰前で `gesture.stop()` を実行しサーボ音誤検知ループを排除。T-1〜T-4全PASS（実機確認済み）。
-- **→ Phase 2.3 残タスク（コーディング担当AIへ指示済み）**:
-  - ビジュアル認識改善（see_around視点修正 + survey_room実装）
+- **✅ ビジュアル認識改善完了（2026-04-14）**: see_around視点プロンプトを一人称視野（「僕が今見ているもの」）に修正。survey_room.sh新規作成（左・正面・右の3方向撮影→Vision API一括送信）。TOOLS.mdにsurvey_roomエントリ追加。T-1〜T-7全PASS（実機確認済み）。**Phase 2.3 全タスク完了**。
 - **✅ Phase 3 Task A1完了（2026-04-06）**: `PSU_MAX_CURRENT=5000` をEEPROMに書き込み・再起動後反映確認済み。UPS HAT(B)からの5V/5A給電をPi5が上限5Aとして正常認識。Task A2開始準備完了。
 - **✅ Phase 3 Task A2完了（2026-04-07）**: UPS HAT(B)+NCR18650×2でACアダプタなし自律起動成功。`vcgencmd get_throttled=0x0`・`core=0.8803V`・パススルー充電も確認。**系統A（脳用電源）確立完了**。USBケーブル非依存の移動可能な「身体性」基盤が整った。
 - **✅ Phase 3 Task B完了（2026-04-10）**: XL4015（CC/CV対応）で6.02V出力確立。1000μF/25V電解コンデンサ出力側実装。Pi5 Pin20 ↔ ブレッドボードGNDレールで共通GND確立。**系統B（動力系電源）基盤完成**。
@@ -215,6 +214,7 @@ rm -rf /home/tukapontas/gakukoma/brain/
   - 全方向動作確認済み（up/down/left/right/center）
 - **✅ GitHubリポジトリ作成（2026-04-13）**: https://github.com/akiratsukakoshi/gakukoma に初回push完了。管理対象: `gakukoma/`・`a2a/`・`.openclaw/workspace/`。`openclaw.json`（APIキー）は除外済み。
 - **✅ workspace内部 .git 削除（2026-04-13）**: OpenClaw compaction用の内部gitを削除し、外側リポジトリに統合。バックアップ: `/home/tukapontas/backups/openclaw_workspace_git_20260413.tar.gz`。ロールバック手順は上記Phase 2.5セクション参照。
+- **✅ GAKUKOMA Brain実装完了（2026-04-14、Claudeサブエージェント）**: `gakukoma_brain.py`新規作成・`voice_loop.py`修正完了。Anthropic SDK直接呼び出し（subprocess/OpenClaw廃止）・prompt caching・ツール実行ループ実装。import確認・構文確認PASS。実機テスト（T-3〜T-8）は次回セッションで実施。懸念: speak_text二重発話リスク・local_history上限なし（長時間セッションで増加）・max_tokens=200超過時空文字列返却の可能性。
 - **→ Phase 3 次のステップ**: Task D（TB6612FNG配線）が残存。Task E完了によりTask D→Task Fへ順次着手。**着手順序**: Task D（Gemini）→ Task F → Task G+H。
 - **申し送り（Phase 3以降）**: サーボ駆動時の瞬間電流消費が大きいため、モーター増加時はPin 4ではなく外部電源（DCDC）からの供給推奨（Antigravityより）。
 - **継続観測**: レスポンス速度が目標8秒未達の場合はストリーミング発話実装を検討。

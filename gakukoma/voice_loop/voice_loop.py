@@ -2,18 +2,18 @@ import os
 import sys
 import subprocess
 import yaml
-import json
 import re
 import time
 import wave
 import collections
-import uuid
 import numpy as np
 import sounddevice as sd
 import webrtcvad
 
 # Add parent directory to sys.path to import tts module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append("/home/tukapontas/gakukoma/brain")
+from gakukoma_brain import GAKUKOMABrain
 
 from tts.speak_text import OpenJTalkTTS
 from faster_whisper import WhisperModel
@@ -80,9 +80,7 @@ class VoiceLoop:
         self.state = "idle" # "idle" | "listening" | "thinking" | "speaking"
         self.led = LedController()
         self.led.set_state("idle")
-        self.session_id = None
-        self.local_history = []   # [(user_text, gakukoma_response), ...]
-        self.is_first_turn = True
+        self.brain = GAKUKOMABrain(config)
         self.audio_file = self.config["temp"]["audio_file"]
 
         # ジェスチャーコントローラー初期化
@@ -218,83 +216,12 @@ class VoiceLoop:
             result.append(seg.text)
         return "".join(result).strip()
 
-    # few-shot priming（会話同意形式）
-    _PRIMING_EXAMPLES = (
-        "ガクチョ: 話す前にルールを確認するよ。返答は必ず2〜3文以内。長くなりそうなら1文でいい。ユーザーの発言をそのまま繰り返さない。「へぇ〜」や「ワクワク」などの感嘆詞を連続で使わない。わかった？\n"
-        "がくこま: わかった。短く、自分の言葉で返す。\n"
-        "ガクチョ: 今日なにしてた？\n"
-        "がくこま: 窓の外を観察してたんだ。虫が飛ぶルートに法則があるのかなって。\n"
-        "ガクチョ: 疲れたよ\n"
-        "がくこま: それは大変だったね。少し休んで？\n"
-        "ガクチョ: 音楽聴いてたよ\n"
-        "がくこま: どんな曲？音の波って不思議だよね、空気を伝わって耳に届くんだから。\n\n"
-    )
-
-    def build_message(self, text: str) -> str:
-        """メッセージに会話コンテキストを付加する"""
-        if self.is_first_turn:
-            # 案A: few-shot priming（初回ターンのみ）
-            self.is_first_turn = False
-            return self._PRIMING_EXAMPLES + text
-        elif self.local_history:
-            # 案B: ローカル履歴注入（2ターン目以降）
-            lines = ["（直前の会話）"]
-            for u, g in self.local_history[-3:]:
-                lines.append(f"ユーザー: {u}")
-                lines.append(f"がくこま: {g}")
-            lines.append("（続き）\n")
-            return "\n".join(lines) + "\n" + text
-        else:
-            return text
-
-    def call_openclaw(self, text):
-        message = self.build_message(text)
+    def call_brain(self, text: str) -> str:
         print("考え中...")
         try:
-            agent_cmd = ["openclaw", "agent", "--agent", "main", "--message", message, "--json"]
-            if self.session_id:
-                agent_cmd.extend(["--session-id", self.session_id])
-            
-            agent_resp_json = subprocess.check_output(agent_cmd).decode("utf-8")
-            
-            start_idx = agent_resp_json.find('{')
-            if start_idx != -1:
-                agent_resp_json = agent_resp_json[start_idx:]
-            
-            resp_data = json.loads(agent_resp_json)
-            
-            # セッションIDの更新
-            try:
-                # 複数のパスを試行
-                result = resp_data.get("result", {})
-                new_session_id = result.get("systemPromptReport", {}).get("sessionId") or \
-                                 result.get("meta", {}).get("agentMeta", {}).get("sessionId")
-                if new_session_id:
-                    self.session_id = new_session_id
-                    print(f"Session ID updated: {self.session_id}")
-                else:
-                    print(f"Warning: sessionId not found in response. JSON keys: {list(result.keys())}")
-                
-                # キャッシュ使用量ログ出力（レスポンス速度・プロンプトキャッシュ効果の実測用）
-                usage = result.get("meta", {}).get("agentMeta", {}).get("usage", {})
-                if usage:
-                    cache_read = usage.get("cacheRead", 0)
-                    cache_write = usage.get("cacheWrite", 0)
-                    print(f"Token Usage -> cache_read_input_tokens: {cache_read}, cache_creation_input_tokens: {cache_write}")
-                    
-            except Exception as e:
-                print(f"Warning: Failed to extract session ID or usage: {e}")
-
-            response = resp_data["result"]["payloads"][0]["text"]
-            
-            # 案B: ローカル履歴に追加
-            self.local_history.append((text, response))
-            if len(self.local_history) > 5:
-                self.local_history.pop(0)
-
-            return response
+            return self.brain.invoke(text)
         except Exception as e:
-            print(f"Error calling OpenClaw: {e}")
+            print(f"Error calling brain: {e}")
             return "すみません、エラーが発生しました。"
 
     def run(self):
@@ -316,9 +243,7 @@ class VoiceLoop:
                         print(f"WAKEVOICE: {text}")
                         if self.is_wakeword(text):
                             speak("はい、なんでしょう", self.tts_engine)
-                            self.session_id = str(uuid.uuid4())
-                            self.local_history = []
-                            self.is_first_turn = True
+                            self.brain.new_session()
                             self.state = "listening"
                             self.led.set_state("listening")
                             self._consecutive_failures = 0
@@ -364,6 +289,7 @@ class VoiceLoop:
                             print(f"YOU: {text}")
 
                             if self.is_sleepword(text):
+                                self.brain.end_session()
                                 speak("おやすみなさい", self.tts_engine)
                                 self.flush_stream(active_stream, 1.5)
                                 self.state = "idle"
@@ -373,7 +299,7 @@ class VoiceLoop:
                                     self._gesture.go_center()
                                 continue
 
-                            response = self.call_openclaw(text)
+                            response = self.call_brain(text)
                             self.state = "speaking"
                             self.led.set_state("speaking")
                             # スピーキングジェスチャー開始（speak() は同期なのでバックグラウンドで実行）
@@ -424,7 +350,7 @@ class VoiceLoop:
                     continue
                     
                 print(f"YOU: {stt_result}")
-                response = self.call_openclaw(stt_result)
+                response = self.call_brain(stt_result)
                 speak(response, self.tts_engine)
                 
         except KeyboardInterrupt:
