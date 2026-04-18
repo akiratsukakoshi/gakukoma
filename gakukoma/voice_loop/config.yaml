@@ -73,3 +73,18 @@ vad:
   silence_threshold: 1.5     # 無音継続でSTT渡しとみなす秒数
   aggressiveness: 3          # webrtcvad感度（0〜3、3が最高感度でノイズ誤トリガー抑制）
   min_speech_duration: 0.8   # これ以下は無音として無視（誤検出防止）
+
+# モーター設定（Phase 3追加）
+motor:
+  pwm_a: 12                  # ハードウェアPWM0（左モーター速度）
+  ain1: 20                   # 左モーター方向1
+  ain2: 26                   # 左モーター方向2 ※GPIO21から変更済み
+  pwm_b: 13                  # ハードウェアPWM1（右モーター速度）
+  bin1: 24                   # 右モーター方向1
+  bin2: 25                   # 右モーター方向2
+  stby: 16                   # HIGHで動作有効
+  pwm_frequency: 1000        # Hz
+  default_speed: 70          # % (0〜100) ※左履帯の負荷に合わせて調整
+  turn_speed: 65             # % 旋回時 ※履帯の張りでつまるため高めに設定
+  motor_a_invert: true       # 左モーター配線極性反転対応（実機テストで判明）
+  motor_b_invert: false      # 実機テストで右は反転不要と判明

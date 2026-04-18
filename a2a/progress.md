@@ -3,7 +3,7 @@
 > **ClaudeCode管理ファイル。セッション開始時に必ず確認すること。**
 > 完了報告書（`_completed.md`）が届いたら本ファイルを更新する。
 
-最終更新: 2026-04-14（GAKUKOMA Brain実装完了報告受領: voice_loop→brain直接API呼び出しに移行）
+最終更新: 2026-04-16（**Phase 3 完了**・Phase 4 スキップ決定・運用フェーズへ移行）
 
 ---
 
@@ -13,8 +13,9 @@
 **Phase 2: 目の覚醒（Camera & Look-at）✅ 完了**
 **Phase 2.1: UX向上（Wakeword / VAD / 首振り方向指示）✅ 完了**
 **Phase 2.2: パンチルト精度向上 ✅ 完了**
-**Phase 2.3: レスポンス速度・ビジュアル認識・システムプロンプト改善 📋 進行中**
-→ Phase 2.3完了後、Phase 3: 足の覚醒（走行系）へ移行（ハードウェア到着待ち）
+**Phase 2.3: レスポンス速度・ビジュアル認識・システムプロンプト改善 ✅ 完了**
+**Phase 3: 大地への進出（走行系・電源独立） ✅ 完了**
+**→ 運用フェーズへ移行（Phase 4 はスキップ・必要時に再開）**
 
 ---
 
@@ -126,19 +127,15 @@ rm -rf /home/tukapontas/gakukoma/brain/
 | Task A2: UPS HAT(B) Pi5自律起動テスト | Gemini | ✅ 完了 | `hardware/20260402_phase3_ups_hat_test_implementation.md` | `hardware/20260402_phase3_ups_hat_test_completed.md` |
 | Task B: 系統B電源構築（LM2596 6V設定・コンデンサ挿入・GND共通接地） | Gemini | ✅ 完了 | `hardware/20260402_phase3_power_system_b_implementation.md` | `hardware/20260402_phase3_power_system_b_completed.md` |
 | Task C: タンクシャーシ確認・モーター配線準備 | Gemini | ✅ 完了 | `hardware/20260402_phase3_chassis_prep_implementation.md` | `hardware/20260402_phase3_chassis_prep_completed.md` |
-| Task D: TB6612FNG配線（GPIO接続・電源系統B接続） | Gemini | ⬜ 未着手 | `hardware/20260402_phase3_tb6612_wiring_implementation.md` | - |
+| Task D: TB6612FNG配線（GPIO接続・電源系統B接続） | Gemini | ✅ 完了 | `hardware/20260402_phase3_tb6612_wiring_implementation.md` | `hardware/20260402_phase3_tb6612_wiring_completed.md`（★AIN2はGPIO26に変更済み） |
 | Task E: DS3218換装・アルミパンチルト台座移行 | Gemini | ✅ 完了 | `hardware/20260402_phase3_ds3218_swap_implementation.md` | `hardware/20260402_phase3_ds3218_swap_completed.md` |
-| Task F: 統合ハードウェア検証 | Gemini | ⬜ 未着手 | - | - |
-| Task G: `move_robot()` ツール実装 | コーディング担当AI | ⬜ 未着手 | `coding/20260402_phase3_move_robot_implementation.md` | - |
-| Task H: 走行・電源の統合テスト（T-1〜T-13） | コーディング担当AI + Gemini | ⬜ 未着手 | - | - |
+| Task F: 統合ハードウェア検証 | Gemini | ✅ 完了 | `hardware/20260416_phase3_hw_integration_verification_implementation.md` | `hardware/20260416_phase3_hw_integration_verification_completed.md` |
+| Task G: `move_robot()` ツール実装 | コーディング担当AI | ✅ 完了 | `coding/20260416_phase3_move_robot_implementation.md`（旧0402は中止） | `coding/20260416_phase3_move_robot_completed.md` |
+| Task H: 走行・電源の統合テスト | コーディング担当AI + Gemini | ✅ 完了（Task G T-1〜T-7でカバー・運用で継続確認） | - | - |
 
-### Phase 4（ハードウェア未手配 → 購入後に着手）
+### Phase 4（スキップ・運用しながら判断）
 
-| タスク | 担当 | 状態 | 指示書 | 完了報告書 |
-|---|---|---|---|---|
-| グリッパーキット組み立て | Gemini | ⬜ 未着手 | - | - |
-| `pick_up_object()` 等ツール実装 | コーディング担当AI | ⬜ 未着手 | - | - |
-| 把持動作の統合テスト | コーディング担当AI + Gemini | ⬜ 未着手 | - | - |
+グリッパーキットは未手配。Phase 3完了時点で運用フェーズへ移行し、必要に応じて再開する。
 
 ---
 
@@ -215,6 +212,16 @@ rm -rf /home/tukapontas/gakukoma/brain/
 - **✅ GitHubリポジトリ作成（2026-04-13）**: https://github.com/akiratsukakoshi/gakukoma に初回push完了。管理対象: `gakukoma/`・`a2a/`・`.openclaw/workspace/`。`openclaw.json`（APIキー）は除外済み。
 - **✅ workspace内部 .git 削除（2026-04-13）**: OpenClaw compaction用の内部gitを削除し、外側リポジトリに統合。バックアップ: `/home/tukapontas/backups/openclaw_workspace_git_20260413.tar.gz`。ロールバック手順は上記Phase 2.5セクション参照。
 - **✅ GAKUKOMA Brain実装完了（2026-04-14、Claudeサブエージェント）**: `gakukoma_brain.py`新規作成・`voice_loop.py`修正完了。Anthropic SDK直接呼び出し（subprocess/OpenClaw廃止）・prompt caching・ツール実行ループ実装。import確認・構文確認PASS。実機テスト（T-3〜T-8）は次回セッションで実施。懸念: speak_text二重発話リスク・local_history上限なし（長時間セッションで増加）・max_tokens=200超過時空文字列返却の可能性。
-- **→ Phase 3 次のステップ**: Task D（TB6612FNG配線）が残存。Task E完了によりTask D→Task Fへ順次着手。**着手順序**: Task D（Gemini）→ Task F → Task G+H。
+- **✅ Phase 3 Task F完了（2026-04-16）**: 統合ハードウェア検証完了。電源系統・パンチルトサーボ・モータードライバ全て疎通確認済み。詳細: `hardware/20260416_phase3_hw_integration_verification_completed.md`。
+  - 電源: 系統A=5.0V・系統B制御6.19V・動力12.3V・共通GND確立
+  - サーボ: I2C 0x40認識・全方向動作確認
+  - モーター: STBY疎通確認・左右モーター動作確認
+  - **⚠️ Task G実装向け申し送り（重要）**:
+    - 右モーター（BIN）は物理配線極性により「前進命令=後退回転」→ `move_robot()` 実装時にBINの正転/逆転ロジックを左と逆にすること
+    - 左モーターは履帯の張りが強く PWM 0.3 では脱調（ピー音）発生 → **最小PWMデューティ比を 0.4〜0.6 以上から開始**すること
+    - GPIOアサイン確定版は `20260416_phase3_hw_integration_verification_implementation.md` 参照（AIN2=GPIO26等）
+- **✅ Phase 3 Task G完了（2026-04-16）**: T-1〜T-7 全PASS。実機調整で判明した事項: 両モーター配線極性が逆（`motor_a_invert: true`・`motor_b_invert: false`）。default_speed=70・turn_speed=65に調整。左右履帯の張り調整（物理）で直進・旋回とも良好。Brain統合（T-6）・走行+首振り同時（T-7）ともPASS。
+- **→ Phase 3 次のステップ**: Task H（走行・電源の統合テスト T-1〜T-13）へ。指示書未作成。
+- **✅ Phase 3 Task D完了（2026-04-16）**: TB6612FNG配線完了。VM=12V・VCC=3.3V実測確認。STBY疎通スクリプト正常動作確認。**★ AIN2ピン変更**: GPIO21（Pin40）がMAX98357Aと競合のため、GPIO26（Pin37）に恒久変更。GPIOアサイン確定版: PWMA=GPIO12, AIN1=GPIO20, **AIN2=GPIO26**, PWMB=GPIO13, BIN1=GPIO24, BIN2=GPIO25, STBY=GPIO16。
 - **申し送り（Phase 3以降）**: サーボ駆動時の瞬間電流消費が大きいため、モーター増加時はPin 4ではなく外部電源（DCDC）からの供給推奨（Antigravityより）。
 - **継続観測**: レスポンス速度が目標8秒未達の場合はストリーミング発話実装を検討。

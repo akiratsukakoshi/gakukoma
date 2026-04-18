@@ -1,5 +1,9 @@
 # Phase 3 Task G：`move_robot()` ツール実装
 
+> **⛔ この指示書は中止です。**
+> GAKUKOMA Brain 移行（2026-04-14）によりアーキテクチャが変わったため、OpenClaw前提の本指示書は無効。
+> **新指示書: `coding/20260416_phase3_move_robot_implementation.md` を使用すること。**
+
 **作成日:** 2026-04-02
 **作成者:** ClaudeCode（司令塔）
 **担当:** Antigravity

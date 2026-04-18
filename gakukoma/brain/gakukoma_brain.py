@@ -79,7 +79,30 @@ TOOLS = [
             },
             "required": ["pan", "tilt"]
         }
-    }
+    },
+    {
+        "name": "move_robot",
+        "description": "ロボットを走行させる。前進・後退・左右旋回・スピン・停止が可能。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "direction": {
+                    "type": "string",
+                    "enum": ["forward", "backward", "left", "right", "spin_left", "spin_right", "stop"],
+                    "description": "走行方向。forward=前進, backward=後退, left=左旋回, right=右旋回, spin_left=左スピン, spin_right=右スピン, stop=停止"
+                },
+                "duration": {
+                    "type": "number",
+                    "description": "走行秒数（デフォルト: 1.0）"
+                },
+                "speed": {
+                    "type": "integer",
+                    "description": "速度 0〜100%（省略時はデフォルト速度60%）"
+                }
+            },
+            "required": ["direction"]
+        }
+    },
 ]
 
 PRIMING_EXAMPLES = (
@@ -180,6 +203,12 @@ class GAKUKOMABrain:
             "look_at_user":  [str(tools_dir / "look_at_user.sh")],
             "set_pan_tilt":  [str(tools_dir / "set_pan_tilt.sh"),
                               str(inp.get("pan", 90)), str(inp.get("tilt", 90))],
+            "move_robot": [
+                str(tools_dir / "move_robot.sh"),
+                inp.get("direction", "stop"),
+                str(inp.get("duration", 1.0)),
+                str(inp.get("speed", "")),
+            ],
         }
         if name not in dispatch:
             return f"未知のツール: {name}"
