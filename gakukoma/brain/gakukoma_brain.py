@@ -116,6 +116,9 @@ PRIMING_EXAMPLES = (
     "がくこま: どんな曲？音の波って不思議だよね、空気を伝わって耳に届くんだから。\n\n"
 )
 
+MEMORY_DIR = Path("/home/tukapontas/gakukoma/memory")
+LEGACY_MEMORY_DIR = Path("/home/tukapontas/.openclaw/workspace/memory")  # 旧ディレクトリ
+
 
 class GAKUKOMABrain:
     def __init__(self, config: dict):
@@ -142,18 +145,34 @@ class GAKUKOMABrain:
         return response
 
     def end_session(self):
+        """おやすみ時に呼ぶ。完全な会話ログをraw/に保存する。"""
         if not self.local_history:
             return
-        today = datetime.now().strftime("%Y-%m-%d")
-        memory_dir = Path("/home/tukapontas/.openclaw/workspace/memory")
-        memory_dir.mkdir(parents=True, exist_ok=True)
-        memory_path = memory_dir / f"{today}.md"
-        lines = [f"\n## セッション（{datetime.now().strftime('%H:%M')}）\n"]
+
+        # raw/ に完全なセッションログを保存
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        raw_path = MEMORY_DIR / "raw" / f"{timestamp}.md"
+        MEMORY_DIR.joinpath("raw").mkdir(parents=True, exist_ok=True)
+
+        lines = [
+            f"# セッションログ {timestamp}",
+            f"session_id: {self.session_id}",
+            "",
+        ]
         for user_text, response in self.local_history:
-            lines.append(f"- ユーザー: {user_text[:50]}")
-        with open(memory_path, "a", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
-        print(f"セッションサマリーを {memory_path} に追記しました")
+            lines.append(f"**ユーザー**: {user_text}")
+            lines.append(f"**がくこま**: {response}")
+            lines.append("")
+
+        raw_path.write_text("\n".join(lines), encoding="utf-8")
+        print(f"セッションログを {raw_path} に保存しました")
+
+        # 旧ディレクトリへの後方互換ログも残す（念のため）
+        today = datetime.now().strftime("%Y-%m-%d")
+        legacy_path = LEGACY_MEMORY_DIR / f"{today}.md"
+        if legacy_path.exists():
+            # 旧ファイルがある場合はそのまま（上書きしない）
+            pass
 
     def _build_message(self, user_text: str) -> str:
         parts = []
@@ -182,16 +201,51 @@ class GAKUKOMABrain:
         return "\n\n".join(parts)
 
     def _load_daily_notes(self, days: int = 3) -> str:
-        memory_dir = Path("/home/tukapontas/.openclaw/workspace/memory")
-        notes = []
-        for i in range(days):
-            date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-            path = memory_dir / f"{date}.md"
-            if path.exists():
-                content = path.read_text(encoding="utf-8").strip()
-                if content:
-                    notes.append(f"[{date}]\n{content}")
-        return "\n\n".join(notes) if notes else ""
+        """
+        wikiのindex.md と core_memories.md を読み込んで返す。
+        wikiが存在しない場合（初期状態）は旧ディレクトリのログをフォールバックで読む。
+        """
+        wiki_dir = MEMORY_DIR / "wiki"
+        index_path = wiki_dir / "index.md"
+        core_path = wiki_dir / "core_memories.md"
+
+        parts = []
+
+        # wiki/index.md が存在する場合（Phase 5.1稼働後）
+        if index_path.exists():
+            index_content = index_path.read_text(encoding="utf-8").strip()
+            if index_content:
+                parts.append(f"【記憶インデックス】\n{index_content}")
+
+        # wiki/core_memories.md が存在する場合
+        if core_path.exists():
+            core_content = core_path.read_text(encoding="utf-8").strip()
+            if core_content:
+                parts.append(f"【忘れられない記憶】\n{core_content}")
+
+        # wikiがまだ空（初期状態）の場合は旧ディレクトリをフォールバック
+        if not parts:
+            notes = []
+            for i in range(days):
+                date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+                # 新ディレクトリのrawログを試す
+                raw_files = sorted((MEMORY_DIR / "raw").glob(f"{date}_*.md")) if (MEMORY_DIR / "raw").exists() else []
+                if raw_files:
+                    for p in raw_files[-1:]:  # 当日最後のセッションのみ
+                        content = p.read_text(encoding="utf-8").strip()
+                        if content:
+                            notes.append(f"[{date}]\n{content[:500]}")  # 500文字に制限
+                else:
+                    # 旧ディレクトリ
+                    legacy_path = LEGACY_MEMORY_DIR / f"{date}.md"
+                    if legacy_path.exists():
+                        content = legacy_path.read_text(encoding="utf-8").strip()
+                        if content:
+                            notes.append(f"[{date}]\n{content}")
+            if notes:
+                parts.append(f"【最近の記憶】\n" + "\n\n".join(notes))
+
+        return "\n\n".join(parts) if parts else ""
 
     def _execute_tool(self, name: str, inp: dict) -> str:
         tools_dir = Path("/home/tukapontas/gakukoma/tools")

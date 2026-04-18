@@ -88,3 +88,11 @@ motor:
   turn_speed: 65             # % 旋回時 ※履帯の張りでつまるため高めに設定
   motor_a_invert: true       # 左モーター配線極性反転対応（実機テストで判明）
   motor_b_invert: false      # 実機テストで右は反転不要と判明
+
+# アイドル行動設定（Phase 5.1追加）
+idle_behavior:
+  enabled: true
+  interval_sec: 120      # 退屈行動のインターバル（秒）。デフォルト5分
+  time_restriction:      # この時間帯は退屈行動をOFF
+    start_hour: 22       # 22時以降はOFF
+    end_hour: 7          # 7時以前はOFF

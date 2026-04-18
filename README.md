@@ -1,7 +1,21 @@
 # GAKUKOMA — フィジカルAIロボット
 
 Raspberry Pi 5上で動作する自律会話・自律移動ロボット。
-音声対話・視覚認識・パンチルト追跡・タンク走行を統合した「身体を持つAI」。
+音声対話・視覚認識・パンチルト追跡・タンク走行・**記憶の蓄積と学習**を統合した「身体を持ち、経験を重ねるAI」。
+
+---
+
+## コアコンセプト
+
+がくこまは「話す・見る・動く」身体機能（Phase 1〜3）に加え、**経験を記憶し、自ら世界に働きかける知性**（Phase 5〜）を持つことを目指している。
+
+設計上のこだわりは**非宣言的記憶**。人間が何度も通る場所を無意識に覚えるように、がくこまも日々の行動・会話・場所を蓄積していく。記憶は無限に積み上げるのではなく、脳科学のCLS理論（Complementary Learning Systems）に倣い「忘却と保存の設計」を持つ。
+
+| 目標とする知性レベル | 実現したいこと |
+|---|---|
+| 小学5年生程度の知性 | 高度な知識問答ではなく、周囲に興味を持ち、働きかけ、経験を蓄積する |
+| 身体性の重視 | 宣言的記憶よりも非宣言的記憶（空間・手続き・情動） |
+| 制約の現実 | Raspberry Pi 5 + Claude Haiku API のコスト・レイテンシーの中で最大化 |
 
 ---
 
@@ -9,109 +23,89 @@ Raspberry Pi 5上で動作する自律会話・自律移動ロボット。
 
 | パーツ | 詳細 |
 |---|---|
-| コンピュータ | Raspberry Pi 5（8GB） |
-| 電源（脳系統A） | UPS HAT(B) + NCR18650 × 2（5V/5A） |
-| 電源（動力系統B） | XL4015 DCDC降圧（11.1V → 6V）+ 1000μFコンデンサ |
-| バッテリー | 11.1V Li-ion 3セル |
-| マイク | USB単一指向性マイク |
+| コンピュータ | Raspberry Pi 5（16GB） |
+| 電源（脳・系統A） | UPS HAT(B) + NCR18650 × 2（5V/5A・自律起動対応） |
+| 電源（動力・系統B） | XL4015 DCDC降圧（11.1V → 6V）+ 1000μFコンデンサ |
+| バッテリー | 11.1V Li-ion 3セル（3S） |
+| マイク | USB単一指向性マイク（hw:3,0） |
 | スピーカー | MAX98357A I2S DAC + 4Ω8Wスピーカー |
-| カメラ | EMEET SmartCam C960（USB） |
+| カメラ | EMEET SmartCam C960（USB, /dev/video0） |
 | サーボドライバ | PCA9685（I2C 0x40） |
 | パンチルト | アルミ合金製台座 + DS3218（20kg-cm）× 2 |
 | 走行 | YP100タンクシャーシ + TB6612FNG モータードライバ |
+| LED | RGB LED（GPIO17/27/22） |
 
 ---
 
 ## ソフトウェアアーキテクチャ
 
 ```
-voice_loop.py          ← メインループ（音声入出力・ステートマシン）
+voice_loop.py  ── メインループ（4ステートマシン: idle/listening/thinking/speaking）
     │
     ├─ STT: faster-whisper（small / tiny）
     ├─ TTS: Open JTalk（meiモデル・タチコマ声質）
     ├─ Wakeword: 「おはよう」で起動 / 「おやすみ」でスリープ
     ├─ VAD: webrtcvad による自動発話検出
-    ├─ LED: RGB LED（idle=青 / listening=緑 / thinking=黄 / speaking=赤）
-    ├─ GestureController: パンチルトジェスチャー（thinking/speaking/center）
+    ├─ LED: RGB LED ステート可視化
+    ├─ GestureController: パンチルトジェスチャー
+    ├─ 退屈行動: アイドル一定時間後に自発的な視線移動・移動・呟き
     │
     └─ GAKUKOMABrain（brain/gakukoma_brain.py）
            │
-           └─ Anthropic API（claude-haiku-4-5）直接呼び出し
-                  ├─ Tool Use: look_direction / see_around / look_at_user / ...
-                  ├─ few-shot priming（セッション初回のみ）
-                  ├─ ローカル会話履歴（直近3ターン）
-                  └─ 日次メモ読み書き（~/.openclaw/workspace/memory/）
+           ├─ Anthropic API（claude-haiku-4-5）直接呼び出し
+           ├─ Tool Use: look_direction / see_around / move_robot / ...
+           ├─ few-shot priming（セッション初回のみ）
+           ├─ ローカル会話履歴（直近3ターン）
+           └─ 記憶システム（3層wiki構造）
+                  ├─ ONLINE: wiki/index.md + core_memories.md を参照
+                  └─ OFFLINE: memory_processor.py がセッション後に分析・更新
 ```
 
 ---
 
-## GAKUKOMA Brain — 軽量ブレインシステム
+## 記憶システム（Phase 5.1〜）
 
-### 背景と狙い
+### 設計思想
 
-初期実装では `voice_loop.py` → `openclaw CLI（subprocess）` → `Claude Haiku` という構成を採っていた。OpenClaw はエージェントフレームワークとして多機能だが、GAKUKOMA の用途では**不要なオーバーヘッドが大きな問題**になっていた。
+人間の記憶統合（海馬 → 大脳皮質への転送・睡眠中の記憶固化）を参考に、**ONLINE処理とOFFLINE処理を分離**した設計。
 
-| 問題 | 旧構成での状況 |
+```
+ONLINE（会話中）           OFFLINE（深夜3時 cron）
+─────────────────          ──────────────────────────
+wiki を参照するだけ    →    RAWログを分析 → wiki更新
+レイテンシー最優先          感情スコア付与・忘却処理
+```
+
+### 3層記憶構造
+
+```
+memory/
+├── raw/              RAWセッションログ（7日で自動削除）
+│   └── 2026-04-18_143052.md
+├── episodes/         週次サマリー（30日で圧縮・wiki統合）
+│   └── 2026-W16.md
+└── wiki/             長期記憶（恒久保存）
+    ├── index.md            出来事インデックス（毎日1行追記）
+    ├── core_memories.md    感情スコア8以上の核記憶
+    ├── people/             人物ページ（自動更新）
+    │   └── ガクチョ.md
+    └── places/             場所ページ（Phase 5.3〜）
+```
+
+人間の脳に倣い、**「何を忘れるか」の設計が記憶の質を決める**。日常的な会話は7日で消え、感情的に重要な体験だけが核記憶として長期保存される。
+
+### 退屈行動（Intrinsic Motivation）
+
+アイドル状態（wakewordリッスン中）が一定時間（デフォルト5分）継続すると、確率的に自発行動を起こす。
+
+| 確率 | 行動 |
 |---|---|
-| subprocess起動コスト | 毎ターン300〜500msのオーバーヘッド |
-| 入力トークン数 | Turn 1で約30,105トークン（OpenClawのワークスペース全体をLLMに送信） |
-| キャラクター制御 | OpenClawの汎用プロンプト構造に乗っているため調整が困難 |
-| ツール実行 | システムプロンプト内のテキスト指示に依存（実行されないリスク） |
+| 50% | ランダムな方向を向く |
+| 15% | 少し前進してすぐ止まる |
+| 5% | 呟く（「今日は静かだな」等） |
+| 30% | 何もしない |
 
-これを解決するために **`GAKUKOMABrain`** として軽量フレームワークを自作した。
-
-### 設計方針
-
-**1. Anthropic API 直接呼び出し**
-
-OpenClaw を経由せず `anthropic` Python ライブラリを直接使用する。subprocess起動コストをゼロにし、レイテンシを大幅削減。
-
-**2. 必要最小限のシステムプロンプト**
-
-OpenClawのワークスペース全体（AGENTS.md・TOOLS.md・SOUL.md等）をLLMに渡す旧方式から、約200トークンの固定文字列 `SYSTEM_PROMPT` に切り替え。入力トークン数を **30,105 → 約2,300（92%削減）** に圧縮。
-
-**3. Anthropic 公式 Tool Use 形式**
-
-旧方式ではシェルコマンド名をシステムプロンプトに文字列で書いており、LLMがコマンドを「書くだけ」で実際には実行されないリスクがあった。`TOOLS` 定数で公式の `tool_use` 形式を定義することで、LLMが `stop_reason: "tool_use"` を返したときに**確実にシェルスクリプトが実行される**。
-
-```python
-# tool_useループ: end_turnが返るまでツール実行を続ける
-while True:
-    response = client.messages.create(...)
-    if response.stop_reason == "tool_use":
-        # ツールを実行してmessagesに追記し再呼び出し
-        ...
-    else:  # end_turn
-        return response_text
-```
-
-**4. 4層メッセージ構造**
-
-各ターンのユーザーメッセージは以下の4層を重ねて組み立てる:
-
-```
-Layer 4: 【最近の記憶】日次メモ（過去3日分）  ← 全ターン付加
-Layer 2: few-shot priming会話例             ← 初回ターンのみ
-Layer 3: （直前の会話）ローカル履歴 最新3ターン ← 2ターン目以降
-Layer 1: ユーザーの発言本文
-```
-
-日次メモには前回セッションの会話サマリーが入っており、セッションをまたいだ記憶の継続性を実現している。
-
-**5. セッション管理**
-
-- `new_session()`: ウェイクワード検出時に呼ばれ、会話履歴・フラグをリセット
-- `invoke()`: 1ターンの会話を処理し応答を返す
-- `end_session()`: 「おやすみ」時に呼ばれ、セッション内容を日次メモに追記
-
-### 実測パフォーマンス（2026-04-14 実機テスト）
-
-| 指標 | 旧構成 | 新構成 | 改善率 |
-|---|---|---|---|
-| Turn 1 input tokens | 30,105 | ~2,300 | **-92%** |
-| subprocess起動コスト | 300〜500ms | 0ms | **-100%** |
-| LLMレイテンシ体感 | 1〜2秒 | 大幅改善（体感で明確） | ✅ |
-| ユーザー体験 | - | 「かなりよかった」 | ✅ |
+深夜22時〜朝7時はOFF。`config.yaml` の `idle_behavior.interval_sec` で間隔を調整可能。
 
 ---
 
@@ -120,25 +114,39 @@ Layer 1: ユーザーの発言本文
 ```
 gakukoma/
 ├── brain/
-│   └── gakukoma_brain.py      # GAKUKOMABrainクラス（LLMエージェントコア）
+│   ├── gakukoma_brain.py      # GAKUKOMABrainクラス（LLMエージェントコア）
+│   └── memory_processor.py    # OFFLINE記憶処理（cron実行・wiki更新）
+├── memory/                    # 記憶ストレージ（3層構造）
+│   ├── raw/                   # セッション生ログ（7日保持）
+│   ├── episodes/              # 週次サマリー（30日保持）
+│   └── wiki/                  # 長期記憶（恒久保存）
+│       ├── index.md
+│       ├── core_memories.md
+│       ├── people/
+│       └── places/
 ├── voice_loop/
 │   ├── voice_loop.py          # メインループ（4ステートマシン）
-│   └── config.yaml            # 音声・サーボ・VAD設定
+│   └── config.yaml            # 全設定（音声・サーボ・VAD・idle_behavior等）
 ├── tools/                     # シェルスクリプト（ツール実行インターフェース）
-│   ├── speak_text.sh          # TTS発話
-│   ├── see_around.sh          # カメラ撮影 + Vision API
-│   ├── survey_room.sh         # 3方向撮影 + Vision API一括送信
-│   ├── look_direction.sh      # 首振り（right/left/up/down/front）
-│   ├── look_center.sh         # 正面向き
-│   ├── look_at_user.sh        # 顔追跡
-│   └── set_pan_tilt.sh        # パン・チルト角度直接指定
+│   ├── speak_text.sh
+│   ├── see_around.sh
+│   ├── survey_room.sh         # 3方向撮影 + Vision API一括
+│   ├── look_direction.sh
+│   ├── look_center.sh
+│   ├── look_at_user.sh
+│   ├── set_pan_tilt.sh
+│   └── move_robot.sh
 ├── tts/
 │   └── speak_text.py          # Open JTalk TTS（meiモデル）
 ├── stt/
 │   └── listen_voice.py        # faster-whisper STT
 ├── servo/
 │   ├── pan_tilt.py            # PCA9685 サーボ制御
-│   └── gesture_controller.py  # ジェスチャー（thinking/speaking/center）
+│   └── gesture_controller.py  # ジェスチャー制御
+├── motor/
+│   ├── tb6612_ctrl.py         # TB6612FNG 低レベル制御
+│   ├── motor_driver.py        # モータードライバ抽象層
+│   └── move_robot_cmd.py      # move_robot コマンド実装
 ├── camera/
 │   └── ...                    # OpenCV + Vision API
 └── led_controller.py          # RGB LED ステート可視化
@@ -153,8 +161,10 @@ cd /home/tukapontas/gakukoma/voice_loop
 python3 voice_loop.py
 ```
 
-- 「おはよう」: アクティブモードに移行
-- 「おやすみ」: スリープ復帰
+| 発話 | 動作 |
+|---|---|
+| 「おはよう」 | アクティブモード移行 |
+| 「おやすみ」 | スリープ復帰・セッションログ保存 |
 
 ---
 
@@ -162,20 +172,71 @@ python3 voice_loop.py
 
 | フェーズ | 内容 | 状態 |
 |---|---|---|
-| Phase 1 | 音声対話（STT/TTS/Voice Loop） | ✅ 完了 |
-| Phase 2 | カメラ・パンチルト追跡 | ✅ 完了 |
+| Phase 1 | 音声対話（STT / TTS / Voice Loop） | ✅ 完了 |
+| Phase 2 | カメラ・パンチルト追跡（look_at_user） | ✅ 完了 |
 | Phase 2.1 | Wakeword / VAD / 首振り方向指示 | ✅ 完了 |
-| Phase 2.2 | パンチルト精度向上 | ✅ 完了 |
+| Phase 2.2 | パンチルト精度向上・I2C安定化 | ✅ 完了 |
 | Phase 2.3 | レスポンス速度・ビジュアル認識・UX改善 | ✅ 完了 |
 | Phase 2.5 | GAKUKOMABrain（軽量フレームワーク刷新） | ✅ 完了 |
-| Phase 3 | タンク走行（TB6612FNG配線・move_robot実装） | 🔧 進行中 |
-| Phase 4 | グリッパー把持 | ⬜ 未着手 |
+| Phase 3 | タンク走行（TB6612FNG / move_robot / 電源独立） | ✅ 完了 |
+| Phase 4 | グリッパー把持 | ⏸ 保留 |
+| **Phase 5.1** | **LLM Wiki型記憶システム + 退屈行動** | ✅ **完了** |
+| Phase 5.2 | 顔認識 + person-wiki（face_recognition） | ⬜ 未着手 |
+| Phase 5.3 | 場所記憶 + エンコーダー活用（トポロジカルマップ） | ⬜ 未着手 |
+| Phase 5.4〜 | Navigation Q-learning / PRIMING動的更新 / YOLO物体検出 | ⬜ 将来 |
 
 ---
 
-## ロールバック手順
+## 今後の開発ロードマップ（Phase 5.2以降）
 
-新フレームワーク（Brain）が動作しない場合:
+### Phase 5.2：顔認識 + person-wiki
+- `face_recognition`（dlib）ライブラリによる顔識別
+- `look_at_user()` 実行時に「誰か」を識別して名前で呼びかける
+- person-wiki（`memory/wiki/people/`）をOFFLINE処理で自動更新
+- 前提：Phase 5.1を3週間運用してwikiが育ってから着手推奨
+
+### Phase 5.3：場所記憶 + エンコーダー活用
+- `move_robot()` 後に `see_around()` で場所を自動記述・保存
+- モーターエンコーダー線（現在未使用）を接続してオドメトリ記録
+- SQLiteでトポロジカルマップ（場所ノード・遷移エッジ）を管理
+- 「ここ来たことある」と言えるようになる
+
+### Phase 5.4以降（将来ビジョン）
+- **Navigation Q-learning**: 部屋のマップ上で経路を自律学習
+- **動的PRIMING更新**: 週次でユーザー反応の良い応答パターンを自動学習
+- **YOLOv8 nano物体検出**: `see_around()` に物体認識を追加
+- **REM睡眠模倣**: OFFLINE処理で記憶をランダム連想・翌朝「昨日ふと思ったんだけど」
+- **退屈行動の拡張（novelty-seeking）**: アイドル時にカメラで撮影→初めて見るものに反応
+
+### 将来的なハードウェア追加候補
+- IMU（MPU-6050, ~$2）: 傾き・加速度・転倒検知
+- 距離センサー（HC-SR04, ~$1）: 壁・障害物検知（Q-learning衝突回避に必須）
+- 深度カメラ（将来）: 本格SLAM（Pi5との相性要確認）
+
+---
+
+## GAKUKOMABrain — 技術詳細
+
+### 設計方針
+
+| 設計 | 内容 |
+|---|---|
+| Anthropic API 直接呼び出し | subprocess廃止・起動コストゼロ |
+| 最小システムプロンプト | 約200トークン固定（旧比 -92%） |
+| 公式 Tool Use 形式 | ツール実行漏れを構造的に防止 |
+| ONLINE/OFFLINE分離 | 会話中は軽量・セッション後に重い分析処理 |
+
+### 実測パフォーマンス
+
+| 指標 | 旧構成（OpenClaw） | 現構成 |
+|---|---|---|
+| Turn 1 input tokens | ~30,105 | ~2,600（-91%） |
+| subprocess起動コスト | 300〜500ms | 0ms |
+| LLMレイテンシ | 10秒超 | 1〜2秒 |
+
+### ロールバック手順
+
+新フレームワークが動作しない場合:
 
 ```bash
 # voice_loop.py を旧バージョンに戻す
@@ -185,6 +246,21 @@ git checkout <旧コミットハッシュ> -- gakukoma/voice_loop/voice_loop.py
 cd /home/tukapontas/.openclaw/workspace
 tar xzf /home/tukapontas/backups/openclaw_workspace_git_20260413.tar.gz
 
-# gakukoma_brain.py は削除するだけでよい
+# brain/ を削除
 rm -rf /home/tukapontas/gakukoma/brain/
 ```
+
+---
+
+## cron設定（自動実行）
+
+```
+0 3 * * *  python3 /home/tukapontas/gakukoma/brain/memory_processor.py
+           >> /home/tukapontas/gakukoma/memory/processor.log 2>&1
+```
+
+毎朝3時にOFFLINE処理を実行。RAWログを分析してwikiを更新し、7日超の古いログを削除する。
+
+---
+
+*最終更新: 2026-04-18（Phase 5.1完了・記憶システム導入）*

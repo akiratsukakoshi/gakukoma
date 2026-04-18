@@ -6,9 +6,11 @@ import re
 import time
 import wave
 import collections
+import random
 import numpy as np
 import sounddevice as sd
 import webrtcvad
+from datetime import datetime
 
 # Add parent directory to sys.path to import tts module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -82,6 +84,7 @@ class VoiceLoop:
         self.led.set_state("idle")
         self.brain = GAKUKOMABrain(config)
         self.audio_file = self.config["temp"]["audio_file"]
+        self._idle_start = None   # アイドル開始時刻（Noneなら非アイドル）
 
         # ジェスチャーコントローラー初期化
         try:
@@ -96,6 +99,67 @@ class VoiceLoop:
         # arecordフォールバックはrecord_device(ALSA文字列)を引き続き使用
         self.device = self.config["audio"].get("sounddevice_device",
                                                 self.config["audio"]["record_device"])
+
+    def _maybe_do_idle_action(self):
+        """
+        アイドル一定時間経過後、確率的に自発行動を起こす。
+        インターバルと時間制限はconfig.yamlの idle_behavior セクションで設定。
+        """
+        ib = self.config.get("idle_behavior", {})
+        if not ib.get("enabled", True):
+            return
+
+        hour = datetime.now().hour
+        start_h = ib.get("time_restriction", {}).get("start_hour", 22)
+        end_h   = ib.get("time_restriction", {}).get("end_hour", 7)
+        if hour >= start_h or hour < end_h:
+            return  # 時間制限内は何もしない
+
+        if self._idle_start is None:
+            self._idle_start = datetime.now()
+            return
+
+        interval = ib.get("interval_sec", 300)
+        idle_seconds = (datetime.now() - self._idle_start).total_seconds()
+        if idle_seconds < interval:
+            return
+
+        # インターバル超えたらリセットして何かする（次の行動まで再度待つ）
+        self._idle_start = datetime.now()
+
+        roll = random.random()
+        if roll < 0.50:
+            # 50%: ランダムな方向を見る
+            direction = random.choice(["left", "right", "up", "front"])
+            subprocess.run(
+                ["/home/tukapontas/gakukoma/tools/look_direction.sh", direction],
+                capture_output=True
+            )
+        elif roll < 0.65:
+            # 15%: 少し前進してすぐ止まる
+            subprocess.run(
+                ["/home/tukapontas/gakukoma/tools/move_robot.sh", "forward", "0.4"],
+                capture_output=True
+            )
+            import time
+            time.sleep(0.5)
+            subprocess.run(
+                ["/home/tukapontas/gakukoma/tools/move_robot.sh", "stop", "0"],
+                capture_output=True
+            )
+        elif roll < 0.70:
+            # 5%: 呟く（音声出力）
+            phrases = [
+                "んー、なんか音がしたような気がした",
+                "今日は静かだな",
+                "ちょっと周りを見てみようかな",
+            ]
+            text = random.choice(phrases)
+            subprocess.run(
+                ["/home/tukapontas/gakukoma/tools/speak_text.sh", text],
+                capture_output=True
+            )
+        # 残り30%: 何もしない
 
     def is_wakeword(self, text: str) -> bool:
         return "おはよう" in text or "お早う" in text
@@ -242,11 +306,14 @@ class VoiceLoop:
                         text = self.transcribe(self.audio_file, model_type="tiny")
                         print(f"WAKEVOICE: {text}")
                         if self.is_wakeword(text):
+                            self._idle_start = None
                             speak("はい、なんでしょう", self.tts_engine)
                             self.brain.new_session()
                             self.state = "listening"
                             self.led.set_state("listening")
                             self._consecutive_failures = 0
+                        else:
+                            self._maybe_do_idle_action()
                 
                 elif self.state in ("listening", "thinking", "speaking"):
                     # ACTIVEモード: ストリームを1度だけ開く

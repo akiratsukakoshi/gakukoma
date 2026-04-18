@@ -3,7 +3,7 @@
 > **ClaudeCode管理ファイル。セッション開始時に必ず確認すること。**
 > 完了報告書（`_completed.md`）が届いたら本ファイルを更新する。
 
-最終更新: 2026-04-16（**Phase 3 完了**・Phase 4 スキップ決定・運用フェーズへ移行）
+最終更新: 2026-04-18（Phase 5.1 全タスク完了・T-1〜T-8 全PASS）
 
 ---
 
@@ -15,7 +15,8 @@
 **Phase 2.2: パンチルト精度向上 ✅ 完了**
 **Phase 2.3: レスポンス速度・ビジュアル認識・システムプロンプト改善 ✅ 完了**
 **Phase 3: 大地への進出（走行系・電源独立） ✅ 完了**
-**→ 運用フェーズへ移行（Phase 4 はスキップ・必要時に再開）**
+**Phase 4: スキップ（グリッパー・必要時に再開）**
+**→ Phase 5: 記憶と知性の進化 📋 計画中**
 
 ---
 
@@ -136,6 +137,37 @@ rm -rf /home/tukapontas/gakukoma/brain/
 ### Phase 4（スキップ・運用しながら判断）
 
 グリッパーキットは未手配。Phase 3完了時点で運用フェーズへ移行し、必要に応じて再開する。
+
+---
+
+### Phase 5：記憶と知性の進化（📋 計画中）
+
+> アクションプラン: `plan/phase5_action_plan.md`
+> 参照議論: `research/20260417_brain_evolution_discussion.md`
+
+#### Phase 5.1：LLM Wiki型記憶システム（最優先・即着手可能）
+
+| タスク | 担当 | 状態 | 指示書 | 完了報告書 |
+|---|---|---|---|---|
+| Task A〜E: 3層記憶 + OFFLINE処理 + 感情核記憶 + 忘却スケジュール + 退屈行動 | Antigravity | ✅ 完了 | `coding/20260418_phase5_1_memory_wiki_implementation.md` | `coding/20260418_phase5_1_memory_wiki_completed.md` |
+| Task F: 統合テスト（T-1〜T-8） | ユーザー | ✅ 完了 | - | - |
+
+#### Phase 5.2：顔認識 + person-wiki（Phase 5.1 運用3週間後に着手）
+
+| タスク | 担当 | 状態 | 指示書 | 完了報告書 |
+|---|---|---|---|---|
+| Task A〜E: 顔認識導入 + person-wiki実装 + 統合テスト | Antigravity | ⬜ 未着手 | 作成予定 | - |
+
+#### Phase 5.3：場所記憶 + エンコーダー活用（Phase 5.2 と並行可）
+
+| タスク | 担当 | 状態 | 指示書 | 完了報告書 |
+|---|---|---|---|---|
+| Task A: エンコーダー配線 | Gemini | ⬜ 未着手 | 作成予定 | - |
+| Task B〜F: オドメトリ + 場所記述 + マップ管理 + wiki更新 + 統合テスト | Antigravity | ⬜ 未着手 | 作成予定 | - |
+
+#### Phase 5.4以降（将来・着手時期未定）
+
+Navigation Q-learning / 動的PRIMING更新 / YOLOv8 nano / REM睡眠模倣
 
 ---
 
