@@ -3,7 +3,7 @@
 > **ClaudeCode管理ファイル。セッション開始時に必ず確認すること。**
 > 完了報告書（`_completed.md`）が届いたら本ファイルを更新する。
 
-最終更新: 2026-04-18（Phase 5.1 全タスク完了・T-1〜T-8 全PASS）
+最終更新: 2026-04-23（Memory Processor v2完了: Sonnet移行・Lint/Cross-reference/surprise_score/dreams.md/log.md実装）
 
 ---
 
@@ -151,6 +151,8 @@ rm -rf /home/tukapontas/gakukoma/brain/
 |---|---|---|---|---|
 | Task A〜E: 3層記憶 + OFFLINE処理 + 感情核記憶 + 忘却スケジュール + 退屈行動 | Antigravity | ✅ 完了 | `coding/20260418_phase5_1_memory_wiki_implementation.md` | `coding/20260418_phase5_1_memory_wiki_completed.md` |
 | Task F: 統合テスト（T-1〜T-8） | ユーザー | ✅ 完了 | - | - |
+| 運用改善: index wiki構造化・感情スコア相対評価・places/追加 | Claudeサブエージェント | ✅ 完了 | `coding/20260423_memory_wiki_improvements_implementation.md` | `coding/20260423_memory_wiki_improvements_completed.md` |
+| v2: Sonnet移行・Lint/Cross-ref/surprise_score/dreams/log | Claudeサブエージェント | ✅ 完了 | `coding/20260423_memory_wiki_v2_implementation.md` | `coding/20260423_memory_wiki_v2_completed.md` |
 
 #### Phase 5.2：顔認識 + person-wiki（Phase 5.1 運用3週間後に着手）
 
@@ -257,3 +259,7 @@ Navigation Q-learning / 動的PRIMING更新 / YOLOv8 nano / REM睡眠模倣
 - **✅ Phase 3 Task D完了（2026-04-16）**: TB6612FNG配線完了。VM=12V・VCC=3.3V実測確認。STBY疎通スクリプト正常動作確認。**★ AIN2ピン変更**: GPIO21（Pin40）がMAX98357Aと競合のため、GPIO26（Pin37）に恒久変更。GPIOアサイン確定版: PWMA=GPIO12, AIN1=GPIO20, **AIN2=GPIO26**, PWMB=GPIO13, BIN1=GPIO24, BIN2=GPIO25, STBY=GPIO16。
 - **申し送り（Phase 3以降）**: サーボ駆動時の瞬間電流消費が大きいため、モーター増加時はPin 4ではなく外部電源（DCDC）からの供給推奨（Antigravityより）。
 - **継続観測**: レスポンス速度が目標8秒未達の場合はストリーミング発話実装を検討。
+- **✅ カメラ解像度改善（2026-04-18、ClaudeCode直接対応）**: `config.yaml` のカメラ解像度を 640×480 → **1280×720（HD）** に変更。原因: カメラは1080p対応だが設定がVGAに固定されており、Claude Vision APIに送る画像品質が大幅に低下していた（カメラ性能の約88%を未活用）。OpenCVは撮影のみでありこれが"目の悪さ"の主因。**⚠️ 改善が見られない場合の次の選択肢**:  ①Vision処理を `claude-haiku` → `claude-sonnet-4-6` に切り替える（`see_around.py:51` のモデル名変更のみ。見た目の精度は上がるがコスト・レスポンス数秒増）  ②解像度をさらに 1920×1080 に上げる（ただし API送信データが大きくなりレスポンス遅延増加のトレードオフ）  ③照明改善（暗い環境では解像度に関係なく認識精度が落ちる）
+- **✅ 複数アクション連鎖対応（2026-04-18、ClaudeCode直接対応）**: `gakukoma_brain.py` の SYSTEM_PROMPT に「複合指示はツールを順番に呼び出して達成する」を追記。PRIMING_EXAMPLES に複数ステップの例（前進→右旋回）を追加。既存の `_call_api()` whileループがツール連鎖を処理するため追加実装不要。
+- **✅ max_tokens 200→512へ拡張（2026-04-22、ClaudeCode直接対応）**: 複数ツール連鎖（特に `see_around` 後の複合報告）で200トークン超過→空文字列返却→沈黙になる問題を修正。`gakukoma_brain.py:286` を `max_tokens=512` に変更。SOULルール（2〜3文以内）が守られている限り実際の生成トークンは少ないため、レスポンス速度・コストへの影響は最小限。
+- **✅ 自律探索行動の有効化（2026-04-22、ClaudeCode直接対応）**: 「あたりを動き回って見まわして」のような開放的指示に対して、Claude自身がmove_robot+see_aroundを計画・連続呼び出しできるよう対応。①SYSTEM_PROMPTに「探索系指示はツールを3〜5セット繰り返して達成する・実況speak_text可」を追記、②PRIMINGに探索の具体例を追加、③`_call_api()` にMAX_TOOL_ITERATIONS=20の安全上限を追加（無限ループ防止）。

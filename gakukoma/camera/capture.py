@@ -14,10 +14,13 @@ class CameraCapture:
         self.height = camera_conf.get("height", 480)
         self.capture_file = camera_conf.get("capture_file", "/tmp/gakukoma_capture.jpg")
         
-        self.cap = cv2.VideoCapture(self.device)
+        # V4L2バックエンドを明示することでFOURCC指定が確実に反映される
+        self.cap = cv2.VideoCapture(self.device, cv2.CAP_V4L2)
         if not self.cap.isOpened():
             raise RuntimeError(f"Could not open camera device {self.device}")
-            
+
+        # MJPEGを先に指定してから解像度を設定（YUYVは640x480までしか対応しないため）
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
 

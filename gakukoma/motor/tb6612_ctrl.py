@@ -51,6 +51,9 @@ class TB6612FNG:
         self.motor_a_invert = motor_cfg.get("motor_a_invert", False)
         self.motor_b_invert = motor_cfg.get("motor_b_invert", False)
 
+        # 左モーター速度補正（個体差・履帯テンション差の調整用）
+        self.motor_a_speed_offset = motor_cfg.get("motor_a_speed_offset", 0)
+
         # ドライバを有効化
         self.stby.on()
 
@@ -62,6 +65,9 @@ class TB6612FNG:
         speed == 0: AIN1=L / AIN2=L / PWMA=0（コースト停止）
         """
         speed = max(-100.0, min(100.0, float(speed)))
+        if speed != 0 and self.motor_a_speed_offset != 0:
+            speed = speed + (self.motor_a_speed_offset if speed > 0 else -self.motor_a_speed_offset)
+            speed = max(-100.0, min(100.0, speed))
         if self.motor_a_invert:
             speed = -speed
         if speed > 0:

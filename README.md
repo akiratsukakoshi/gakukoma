@@ -15,7 +15,7 @@ Raspberry Pi 5上で動作する自律会話・自律移動ロボット。
 |---|---|
 | 小学5年生程度の知性 | 高度な知識問答ではなく、周囲に興味を持ち、働きかけ、経験を蓄積する |
 | 身体性の重視 | 宣言的記憶よりも非宣言的記憶（空間・手続き・情動） |
-| 制約の現実 | Raspberry Pi 5 + Claude Haiku API のコスト・レイテンシーの中で最大化 |
+| 制約の現実 | Raspberry Pi 5 + Claude API のコスト・レイテンシーの中で最大化（会話: Haiku / 記憶処理: Sonnet） |
 
 ---
 
@@ -57,8 +57,8 @@ voice_loop.py  ── メインループ（4ステートマシン: idle/listenin
            ├─ few-shot priming（セッション初回のみ）
            ├─ ローカル会話履歴（直近3ターン）
            └─ 記憶システム（3層wiki構造）
-                  ├─ ONLINE: wiki/index.md + core_memories.md を参照
-                  └─ OFFLINE: memory_processor.py がセッション後に分析・更新
+                  ├─ ONLINE: wiki/index.md + core_memories.md を参照（Haiku）
+                  └─ OFFLINE: memory_processor.py がセッション後に分析・更新（Sonnet）
 ```
 
 ---
@@ -70,10 +70,19 @@ voice_loop.py  ── メインループ（4ステートマシン: idle/listenin
 人間の記憶統合（海馬 → 大脳皮質への転送・睡眠中の記憶固化）を参考に、**ONLINE処理とOFFLINE処理を分離**した設計。
 
 ```
-ONLINE（会話中）           OFFLINE（深夜3時 cron）
-─────────────────          ──────────────────────────
-wiki を参照するだけ    →    RAWログを分析 → wiki更新
-レイテンシー最優先          感情スコア付与・忘却処理
+ONLINE（会話中・Haiku）     OFFLINE（深夜3時 cron・Sonnet）
+─────────────────           ─────────────────────────────────────────
+wiki を参照するだけ    →    Step 1: 会話分析（emotion_score + surprise_score）
+レイテンシー最優先          Step 2: core_memories.md 更新（感情スコア8以上）
+                            Step 2b: surprises.md 更新（驚きスコア6以上）
+                            Step 3: people/ ページ更新
+                            Step 3b: places/ ページ更新
+                            Step 4: index.md 再構築
+                            Step 5: Cross-reference 更新（## 関連セクション）
+                            log.md: 更新ログ追記
+                            ─────────────────────────────────────────
+                            週次（月曜）: Lint（矛盾検出・孤立ページ・改善提案）
+                                         dreams.md（REM連想生成）
 ```
 
 ### 3層記憶構造
@@ -82,14 +91,20 @@ wiki を参照するだけ    →    RAWログを分析 → wiki更新
 memory/
 ├── raw/              RAWセッションログ（7日で自動削除）
 │   └── 2026-04-18_143052.md
-├── episodes/         週次サマリー（30日で圧縮・wiki統合）
-│   └── 2026-W16.md
 └── wiki/             長期記憶（恒久保存）
-    ├── index.md            出来事インデックス（毎日1行追記）
+    ├── index.md            カタログ + 出来事時系列（登場人物・場所リンク付き）
     ├── core_memories.md    感情スコア8以上の核記憶
-    ├── people/             人物ページ（自動更新）
-    │   └── ガクチョ.md
-    └── places/             場所ページ（Phase 5.3〜）
+    ├── surprises.md        驚きスコア6以上の予測誤差記録
+    ├── dreams.md           REM連想（Lint時に生成・翌朝の自発発話の源泉）
+    ├── log.md              wiki更新の時系列ログ（append-only）
+    ├── lint_report.md      週次健全性レポート（矛盾・孤立・改善提案）
+    ├── people/             人物ページ（自動更新・cross-reference付き）
+    │   ├── 学長.md
+    │   ├── そのさん.md
+    │   └── ソータ.md
+    └── places/             場所ページ（自動更新・トポロジ情報付き）
+        ├── がくこまの部屋.md
+        └── リビング.md
 ```
 
 人間の脳に倣い、**「何を忘れるか」の設計が記憶の質を決める**。日常的な会話は7日で消え、感情的に重要な体験だけが核記憶として長期保存される。
@@ -116,12 +131,15 @@ gakukoma/
 ├── brain/
 │   ├── gakukoma_brain.py      # GAKUKOMABrainクラス（LLMエージェントコア）
 │   └── memory_processor.py    # OFFLINE記憶処理（cron実行・wiki更新）
-├── memory/                    # 記憶ストレージ（3層構造）
+├── memory/                    # 記憶ストレージ
 │   ├── raw/                   # セッション生ログ（7日保持）
-│   ├── episodes/              # 週次サマリー（30日保持）
 │   └── wiki/                  # 長期記憶（恒久保存）
-│       ├── index.md
-│       ├── core_memories.md
+│       ├── index.md           # カタログ + 時系列
+│       ├── core_memories.md   # 感情スコア8以上の核記憶
+│       ├── surprises.md       # 驚きスコア6以上の予測誤差記録
+│       ├── dreams.md          # REM連想（週次生成）
+│       ├── log.md             # 更新ログ（append-only）
+│       ├── lint_report.md     # 週次健全性レポート
 │       ├── people/
 │       └── places/
 ├── voice_loop/
@@ -205,7 +223,7 @@ python3 voice_loop.py
 - **Navigation Q-learning**: 部屋のマップ上で経路を自律学習
 - **動的PRIMING更新**: 週次でユーザー反応の良い応答パターンを自動学習
 - **YOLOv8 nano物体検出**: `see_around()` に物体認識を追加
-- **REM睡眠模倣**: OFFLINE処理で記憶をランダム連想・翌朝「昨日ふと思ったんだけど」
+- **REM睡眠模倣**: ✅ 実装済み（dreams.md生成）。`gakukoma_brain.py` への注入はPhase 5.2以降
 - **退屈行動の拡張（novelty-seeking）**: アイドル時にカメラで撮影→初めて見るものに反応
 
 ### 将来的なハードウェア追加候補
@@ -263,4 +281,4 @@ rm -rf /home/tukapontas/gakukoma/brain/
 
 ---
 
-*最終更新: 2026-04-18（Phase 5.1完了・記憶システム導入）*
+*最終更新: 2026-04-23（記憶システムv2: Sonnet移行・Cross-reference・Lint・surprise_score・dreams/log追加）*
