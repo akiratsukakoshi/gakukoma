@@ -29,6 +29,21 @@ def _safe_parse_json(text: str) -> dict:
         return json.loads(re.sub(r'\n', ' ', text))
 
 MEMORY_DIR = Path("/home/tukapontas/gakukoma/memory")
+
+
+def resolve_name(raw_name: str, category: str) -> str:
+    """known_names.jsonを参照してエイリアスを正規名に解決する。
+    category は 'people' または 'places'。
+    テーブルにない名前はそのまま返す。
+    """
+    known_names_path = MEMORY_DIR / "wiki" / "known_names.json"
+    if not known_names_path.exists():
+        return raw_name
+    try:
+        table = json.loads(known_names_path.read_text(encoding="utf-8"))
+        return table.get(category, {}).get(raw_name, raw_name)
+    except Exception:
+        return raw_name
 OPENCLAW_CONFIG = "/home/tukapontas/.openclaw/openclaw.json"
 
 def get_api_key() -> str:
@@ -127,10 +142,11 @@ def _append_to_log(wiki_dir: Path, date: str, updates: list):
     log_path.write_text(existing + new_entry, encoding="utf-8")
 
 
-def _update_cross_references(client: anthropic.Anthropic, wiki_dir: Path):
-    """全wikiページを俯瞰してクロスリファレンスを更新する。
+def _update_cross_references(client: anthropic.Anthropic, wiki_dir: Path, updated_pages: list = None):
+    """wikiページのクロスリファレンスを更新する。
 
-    Sonnetに全ページを渡し、各ページ末尾の「## 関連」セクションを生成させる。
+    updated_pages が指定された場合はそのページのみ更新（差分処理）。
+    None または空リストの場合は全ページを対象にする。
     """
     # 全wikiページを収集
     all_pages = {}
@@ -149,10 +165,26 @@ def _update_cross_references(client: anthropic.Anthropic, wiki_dir: Path):
         print("cross-reference: ページ数不足のためスキップ")
         return
 
-    # 全ページの概要をSonnetに渡す
+    # 差分処理: updated_pages が指定された場合はそのページのみ対象にする
+    if updated_pages:
+        target_keys = [p for p in updated_pages if p in all_pages]
+        if not target_keys:
+            print("cross-reference: 更新ページなし。スキップ。")
+            return
+    else:
+        target_keys = list(all_pages.keys())
+
+    # 全ページの概要を渡す（参照用）
     pages_summary = "\n\n---\n\n".join(
         f"=== {key} ===\n{content[:600]}"
         for key, content in all_pages.items()
+    )
+
+    target_clause = (
+        f"対象ページ（本日更新分のみ）: {', '.join(target_keys)}\n"
+        "上記の対象ページについてのみ cross_references を返すこと。他のページは不要。"
+        if updated_pages else
+        "全ページについて cross_references を返すこと。"
     )
 
     xref_prompt = f"""ロボット「がくこま」の記憶wikiの以下のページ一覧を読んでください。
@@ -166,12 +198,14 @@ def _update_cross_references(client: anthropic.Anthropic, wiki_dir: Path):
   "cross_references": [
     {{
       "page": "people/学長",
-      "related_places": ["リビング", "がくこまの部屋"],
+      "related_places": ["リビング", "がくこまの部屋（和室）"],
       "related_people": ["そのさん", "ソータ"],
       "related_memories": ["core_memories"]
     }}
   ]
 }}
+
+{target_clause}
 
 注意:
 - 実際に存在するページのみ記載する
@@ -181,7 +215,7 @@ def _update_cross_references(client: anthropic.Anthropic, wiki_dir: Path):
     try:
         resp = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=1000,
+            max_tokens=2000,
             messages=[{"role": "user", "content": xref_prompt}]
         )
         xref_data = _safe_parse_json(resp.content[0].text)
@@ -389,7 +423,7 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str):
 {{
   "summary": "本日の会話の要約（3〜5文）",
   "emotion_score": 0〜10の整数（下記基準に従って採点）,
-  "core_memory": "感情スコアが8以上の場合のみ記述。がくこまが長期記憶すべき重要な出来事（1〜2文）。8未満は空文字",
+  "core_memory": "感情スコアが7以上の場合のみ記述。がくこまが長期記憶すべき重要な出来事（1〜2文）。7未満は空文字",
   "surprise_score": 0〜10の整数（0=予想通り、5=少し意外、10=全く予想外の出来事）,
   "surprising_moment": "surprise_scoreが6以上の場合のみ記述。何が予想外だったか（1文）。6未満は空文字",
   "people_mentioned": ["会話に出てきた人物名のリスト"],
@@ -401,8 +435,8 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str):
 - 0〜2: 日常的な短い会話、命令実行のみ、特に記憶すべきことなし
 - 3〜4: 楽しい・普通の会話、すでに知っている人や場所の話
 - 5〜6: 印象的な会話、新しい情報を得た、少し特別だった
-- 7: かなり特別な体験。初めての場所探索、新しい能力の発見など
-- 8〜9: 非常に重要な体験。初めて会う人、重要な関係性の確立、感情が強く動いた
+- 7: かなり特別な体験。初めての場所探索、新しい能力の発見など → core_memoryに記録
+- 8〜9: 非常に重要な体験。初めて会う人、重要な関係性の確立、感情が強く動いた → core_memoryに記録
 - 10: 人生レベルの出来事（がくこまの存在や目的に関わる重大体験）
 
 重要: すでにcore_memoriesに記録済みの体験の「繰り返し」はスコアを2〜3下げること。
@@ -433,7 +467,7 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str):
     # ---- Step 2: core_memories.md の更新 ----
     emotion_score = analysis.get("emotion_score", 0)
     core_memory_text = analysis.get("core_memory", "")
-    if emotion_score >= 8 and core_memory_text:
+    if emotion_score >= 7 and core_memory_text:
         core_path = wiki_dir / "core_memories.md"
         existing = existing_core or "# がくこまの忘れられない記憶\n"
         new_entry = f"\n## {today}（感情スコア: {emotion_score}）\n{core_memory_text}\n"
@@ -452,15 +486,17 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str):
         surprises_path.write_text(existing_surprises + surprise_entry, encoding="utf-8")
         print(f"驚き記録: {surprising_moment[:50]}...")
 
-    # 更新ログ追跡用リスト
+    # 更新ログ追跡用リスト（cross-reference 差分処理にも使用）
     update_log = []
-    if emotion_score >= 8 and core_memory_text:
+    updated_pages = []
+    if emotion_score >= 7 and core_memory_text:
         update_log.append(f"core_memory: emotion_score={emotion_score}")
     if surprise_score >= 6 and surprising_moment:
         update_log.append(f"surprises: surprise_score={surprise_score}")
 
     # ---- Step 3: people/ ページの更新 ----
     for person in analysis.get("people_mentioned", []):
+        person = resolve_name(person, "people")
         person_path = wiki_dir / "people" / f"{person}.md"
         person_path.parent.mkdir(parents=True, exist_ok=True)
         existing_person = load_existing_wiki_page(person_path)
@@ -498,11 +534,13 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str):
             person_path.write_text(resp.content[0].text.strip(), encoding="utf-8")
             print(f"person-wiki更新: {person}")
             update_log.append(f"person:{person}")
+            updated_pages.append(f"people/{person}")
         except Exception as e:
             print(f"person-wiki更新エラー（{person}）: {e}")
 
     # ---- Step 3b: places/ ページの更新 ----
     for place in analysis.get("places_mentioned", []):
+        place = resolve_name(place, "places")
         place_path = wiki_dir / "places" / f"{place}.md"
         place_path.parent.mkdir(parents=True, exist_ok=True)
         existing_place = load_existing_wiki_page(place_path)
@@ -537,6 +575,7 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str):
             place_path.write_text(resp.content[0].text.strip(), encoding="utf-8")
             print(f"place-wiki更新: {place}")
             update_log.append(f"place:{place}")
+            updated_pages.append(f"places/{place}")
         except Exception as e:
             print(f"place-wiki更新エラー（{place}）: {e}")
 
@@ -544,8 +583,8 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str):
     summary = analysis.get("summary", "（サマリーなし）")
     _rebuild_index(wiki_dir, today, summary)
 
-    # ---- Step 5: cross-reference の更新 ----
-    _update_cross_references(client, wiki_dir)
+    # ---- Step 5: cross-reference の更新（更新ページのみ差分処理）----
+    _update_cross_references(client, wiki_dir, updated_pages)
 
     # ---- Step 6: person-wiki の自動更新（最後に会った日・最近の話題）----
     _update_person_wiki(client, wiki_dir, raw_logs, today)
@@ -630,6 +669,7 @@ def _update_person_wiki(client: anthropic.Anthropic, wiki_dir: Path, raw_logs: s
         name = person_entry.get("name", "").strip()
         if not name:
             continue
+        name = resolve_name(name, "people")
         last_seen = person_entry.get("last_seen", date)
         recent_topic = person_entry.get("recent_topic", "")
         impression = person_entry.get("impression", "")
@@ -668,6 +708,40 @@ def _update_person_wiki(client: anthropic.Anthropic, wiki_dir: Path, raw_logs: s
                     )
                 else:
                     content = content.rstrip() + f"\n- がくこまの印象: {impression}\n"
+
+            # コンパクション: 「最近の話題」が4件以上なら古い分を「行動パターン」に圧縮
+            topic_lines = []
+            in_topic = False
+            for line in content.split("\n"):
+                if line.strip() == "- 最近の話題:":
+                    in_topic = True
+                    continue
+                if in_topic:
+                    if line.startswith("  - "):
+                        topic_lines.append(line)
+                    elif line.startswith("- "):
+                        in_topic = False
+
+            if len(topic_lines) > 3:
+                to_archive = topic_lines[:-3]
+                keep = topic_lines[-3:]
+                archive_text = "\n".join(
+                    f"  （過去: {t.strip()[2:]}）" for t in to_archive
+                )
+                if "- 行動パターン:" in content:
+                    content = content.replace(
+                        "- 行動パターン:",
+                        f"- 行動パターン:\n{archive_text}"
+                    )
+                else:
+                    content = content.rstrip() + f"\n- 行動パターン:\n{archive_text}\n"
+                new_topic_block = "- 最近の話題:\n" + "\n".join(keep)
+                content = re.sub(
+                    r"- 最近の話題:(\n  - .*)+",
+                    new_topic_block,
+                    content
+                )
+                print(f"  コンパクション実施: {name} ({len(to_archive)}件を行動パターンへ)")
 
             person_path.write_text(content, encoding="utf-8")
             print(f"_update_person_wiki 更新: {name}")

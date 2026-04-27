@@ -3,7 +3,7 @@
 > **ClaudeCode管理ファイル。セッション開始時に必ず確認すること。**
 > 完了報告書（`_completed.md`）が届いたら本ファイルを更新する。
 
-最終更新: 2026-04-27（voice_loop XRUNバグ修正・memory_processor JSON parseエラー修正）
+最終更新: 2026-04-28（memory_processor スケール修正・感情スコア閾値7に変更・重複ページ統合）
 
 ---
 
@@ -153,6 +153,7 @@ rm -rf /home/tukapontas/gakukoma/brain/
 | Task F: 統合テスト（T-1〜T-8） | ユーザー | ✅ 完了 | - | - |
 | 運用改善: index wiki構造化・感情スコア相対評価・places/追加 | Claudeサブエージェント | ✅ 完了 | `coding/20260423_memory_wiki_improvements_implementation.md` | `coding/20260423_memory_wiki_improvements_completed.md` |
 | v2: Sonnet移行・Lint/Cross-ref/surprise_score/dreams/log | Claudeサブエージェント | ✅ 完了 | `coding/20260423_memory_wiki_v2_implementation.md` | `coding/20260423_memory_wiki_v2_completed.md` |
+| v3: スケール修正（ページ肥大化・重複統合・cross-reference差分化・コンパクション） | ClaudeCode | ✅ 完了 | `coding/20260428_memory_wiki_scale_fix_implementation.md` | `coding/20260428_memory_wiki_scale_fix_completed.md` |
 
 #### Phase 5.x：sing_song ツール（並行タスク）
 
@@ -274,3 +275,4 @@ Navigation Q-learning / 動的PRIMING更新 / YOLOv8 nano / REM睡眠模倣
 - **✅ memory_processor cross-referenceエラー修正（2026-04-24、ClaudeCode直接対応）**: `_update_cross_references()` でLLMが返すJSONの `related_section` 文字列にリテラル改行が混入し `json.JSONDecodeError: Unterminated string` が発生していた問題を修正。`related_section`（マークダウン文字列）を廃止し、`related_places` / `related_people` / `related_memories` のリスト形式に変更。Python側でマークダウンを組み立てることで改行混入問題を根本排除。
 - **✅ memory_processor cross-reference/lintエラー再発修正（2026-04-27、ClaudeCode直接対応）**: 2026-04-24の修正後も `_update_cross_references()` と `lint_wiki()` でJSONパースエラーが継続していた問題を修正。原因: LLMが `rem_association`（1〜2文の自由記述）などの文字列値にリテラル改行を混入させることが引き続き発生。対策: `_safe_parse_json()` ヘルパーを追加し、初回パース失敗時に全リテラル改行をスペース化して再試行するようにした。構造的な改行もスペースになるがjsonとして問題なし。`import re` もトップレベルに追加。
 - **✅ voice_loop ACTIVEモードXRUNバグ修正（2026-04-27、ClaudeCode直接対応）**: 会話の途中で音声認識が止まる（LED緑のまま）問題を修正。原因: `sd.InputStream` をセッション全体で共有したまま thinking+call_brain+speak（合計10〜30秒超）の間バッファを読まず ALSA XRUN が発生、その後の `stream.read()` が無期限ブロックしていた。sing_song 追加でTTS長時間化が引き金に。対策（案A）: ストリームをlistenサイクルごとに開き直す方式に変更。`flush_stream()` 呼び出しも不要になったため削除。
+- **✅ memory_processor スケール問題修正・感情スコア閾値変更（2026-04-28、ClaudeCode直接対応）**: cross-referenceエラーの根本原因がmax_tokensではなくwikiページの構造的肥大化・重複生成であることを特定。①重複ページ統合（そのさん/ソータ/がくこまの部屋/自分の部屋の4ファイルを正規ページにマージして削除）、②`wiki/known_names.json` エイリアステーブル + `resolve_name()` による名寄せ実装（以後同一人物が別名で登録されない）、③「最近の話題」を常に最新3件に保つコンパクション実装（古い分は行動パターンに圧縮）、④cross-referenceを「当日更新ページのみ」の差分処理に変更（出力JSON サイズを更新数に比例させる）。合わせてcore_memory保存の感情スコア閾値を8→7に変更。
