@@ -316,69 +316,70 @@ class VoiceLoop:
                             self._maybe_do_idle_action()
                 
                 elif self.state in ("listening", "thinking", "speaking"):
-                    # ACTIVEモード: ストリームを1度だけ開く
-                    with sd.InputStream(device=self.device, channels=1,
-                                        samplerate=self.sample_rate, dtype='int16') as active_stream:
-                        while self.state != "idle":
-                            print("\n[LISTENING] 発話待機中...")
-                            self.state = "listening"
-                            self.led.set_state("listening")
+                    # ACTIVEモード: listenサイクルごとにストリームを開き直す
+                    # （思考・発話中の長時間バッファ未読によるALSA XRUN/ハングを防止）
+                    while self.state != "idle":
+                        print("\n[LISTENING] 発話待機中...")
+                        self.state = "listening"
+                        self.led.set_state("listening")
+                        with sd.InputStream(device=self.device, channels=1,
+                                            samplerate=self.sample_rate, dtype='int16') as active_stream:
                             frames = self.record_vad_from_stream(active_stream)
+                        # ストリームはここで閉じる。以降の思考・発話中はバッファを持たない。
 
-                            if not frames:
-                                continue
+                        if not frames:
+                            continue
 
-                            self.save_wav(frames, self.audio_file)
-                            self.state = "thinking"
-                            self.led.set_state("thinking")
+                        self.save_wav(frames, self.audio_file)
+                        self.state = "thinking"
+                        self.led.set_state("thinking")
+                        if self._gesture:
+                            self._gesture.start_thinking()
+                        print("[THINKING] 認識中...")
+                        text = self.transcribe(self.audio_file, model_type="small")
+
+                        if not text:
+                            print("（認識不能な音声）")
+                            # listening に戻るときは必ずジェスチャーを停止する
                             if self._gesture:
-                                self._gesture.start_thinking()
-                            print("[THINKING] 認識中...")
-                            text = self.transcribe(self.audio_file, model_type="small")
-
-                            if not text:
-                                print("（認識不能な音声）")
-                                # listening に戻るときは必ずジェスチャーを停止する
-                                if self._gesture:
-                                    self._gesture.stop()
-                                self._consecutive_failures = getattr(self, '_consecutive_failures', 0) + 1
-                                if self._consecutive_failures >= 3:
-                                    print("連続認識失敗3回 → IDLEに戻ります")
-                                    self._consecutive_failures = 0
-                                    self.state = "idle"
-                                    self.led.set_state("idle")
-                                else:
-                                    self.state = "listening"
-                                    self.led.set_state("listening")
-                                continue
-
-                            self._consecutive_failures = 0
-                            print(f"YOU: {text}")
-
-                            if self.is_sleepword(text):
-                                self.brain.end_session()
-                                speak("おやすみなさい", self.tts_engine)
-                                self.flush_stream(active_stream, 1.5)
+                                self._gesture.stop()
+                            self._consecutive_failures = getattr(self, '_consecutive_failures', 0) + 1
+                            if self._consecutive_failures >= 3:
+                                print("連続認識失敗3回 → IDLEに戻ります")
+                                self._consecutive_failures = 0
                                 self.state = "idle"
                                 self.led.set_state("idle")
-                                # 首をニュートラルポジション（正面）へ戻す
-                                if self._gesture:
-                                    self._gesture.go_center()
-                                continue
+                            else:
+                                self.state = "listening"
+                                self.led.set_state("listening")
+                            continue
 
-                            response = self.call_brain(text)
-                            self.state = "speaking"
-                            self.led.set_state("speaking")
-                            # スピーキングジェスチャー開始（speak() は同期なのでバックグラウンドで実行）
-                            if self._gesture:
-                                self._gesture.start_speaking()
-                            speak(response, self.tts_engine)
-                            # 発話終了後: ジェスチャー停止 → 正面に戻る
+                        self._consecutive_failures = 0
+                        print(f"YOU: {text}")
+
+                        if self.is_sleepword(text):
+                            self.brain.end_session()
+                            speak("おやすみなさい", self.tts_engine)
+                            self.state = "idle"
+                            self.led.set_state("idle")
+                            # 首をニュートラルポジション（正面）へ戻す
                             if self._gesture:
                                 self._gesture.go_center()
-                            self.flush_stream(active_stream, 1.5)  # TTS残響を捨てる
-                            self.state = "listening"
-                            self.led.set_state("listening")
+                            continue
+
+                        response = self.call_brain(text)
+                        self.state = "speaking"
+                        self.led.set_state("speaking")
+                        # スピーキングジェスチャー開始（speak() は同期なのでバックグラウンドで実行）
+                        if self._gesture:
+                            self._gesture.start_speaking()
+                        speak(response, self.tts_engine)
+                        # 発話終了後: ジェスチャー停止 → 正面に戻る
+                        if self._gesture:
+                            self._gesture.go_center()
+                        # flush_stream不要: 次ループ先頭でストリームを新規オープンするため
+                        self.state = "listening"
+                        self.led.set_state("listening")
 
         except KeyboardInterrupt:
             print("\nシャットダウン中...")

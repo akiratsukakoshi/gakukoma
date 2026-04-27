@@ -50,9 +50,9 @@ servo:
   pan_channel: 0        # PCA9685 ch0 = パン（左右）
   tilt_channel: 1       # PCA9685 ch1 = チルト（上下）
   pan_min: 10           # パン最小角度（左端。0°はギリギリすぎるため余裕を持たせる）
-  pan_max: 160          # パン最大角度（右端。170°以上はPi5本体に接触するため制限）
+  pan_max: 170          # パン最大角度（右端。170°以上はPi5本体に接触するため制限）
   pan_offset: 0         # パン物理オフセット補正（正=右方向に補正、負=左方向に補正）
-  tilt_min: 60          # チルト最小角度（論理上端。physical = tilt_min+tilt_max-logical で物理変換）
+  tilt_min: 40          # チルト最小角度（論理上端。physical = tilt_min+tilt_max-logical で物理変換）
   tilt_max: 120         # チルト最大角度（論理下端。物理120°でボディ干渉のため120°に制限）
   tilt_invert: true     # DS3218換装後、チルト物理方向が反転しているため true に設定
   pan_gain: -0.1        # 1pxあたりの補正角度（Gemini報告に基づき負値）

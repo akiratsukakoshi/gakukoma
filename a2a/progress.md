@@ -3,7 +3,7 @@
 > **ClaudeCode管理ファイル。セッション開始時に必ず確認すること。**
 > 完了報告書（`_completed.md`）が届いたら本ファイルを更新する。
 
-最終更新: 2026-04-23（Memory Processor v2完了: Sonnet移行・Lint/Cross-reference/surprise_score/dreams.md/log.md実装）
+最終更新: 2026-04-27（voice_loop XRUNバグ修正・memory_processor JSON parseエラー修正）
 
 ---
 
@@ -154,18 +154,25 @@ rm -rf /home/tukapontas/gakukoma/brain/
 | 運用改善: index wiki構造化・感情スコア相対評価・places/追加 | Claudeサブエージェント | ✅ 完了 | `coding/20260423_memory_wiki_improvements_implementation.md` | `coding/20260423_memory_wiki_improvements_completed.md` |
 | v2: Sonnet移行・Lint/Cross-ref/surprise_score/dreams/log | Claudeサブエージェント | ✅ 完了 | `coding/20260423_memory_wiki_v2_implementation.md` | `coding/20260423_memory_wiki_v2_completed.md` |
 
+#### Phase 5.x：sing_song ツール（並行タスク）
+
+| タスク | 担当 | 状態 | 指示書 | 完了報告書 |
+|---|---|---|---|---|
+| sing_song ツール実装（音符列演奏 + 首振り） | gakukoma-coder | ✅ 完了 | `coding/20260424_sing_song_implementation.md` | `coding/20260424_sing_song_completed.md` |
+| sing_song 首振りバグ修正・リズム連動 | ClaudeCode | ✅ 完了 | - | - |
+
 #### Phase 5.2：顔認識 + person-wiki（Phase 5.1 運用3週間後に着手）
 
 | タスク | 担当 | 状態 | 指示書 | 完了報告書 |
 |---|---|---|---|---|
-| Task A〜E: 顔認識導入 + person-wiki実装 + 統合テスト | Antigravity | ⬜ 未着手 | 作成予定 | - |
+| Task A〜E: 顔認識導入 + person-wiki実装 + 統合テスト | Claudeサブエージェント | ✅ 完了 | `coding/20260423_phase5_2_face_recognition_implementation.md` | `coding/20260423_phase5_2_face_recognition_completed.md` |
 
 #### Phase 5.3：場所記憶 + エンコーダー活用（Phase 5.2 と並行可）
 
 | タスク | 担当 | 状態 | 指示書 | 完了報告書 |
 |---|---|---|---|---|
-| Task A: エンコーダー配線 | Gemini | ⬜ 未着手 | 作成予定 | - |
-| Task B〜F: オドメトリ + 場所記述 + マップ管理 + wiki更新 + 統合テスト | Antigravity | ⬜ 未着手 | 作成予定 | - |
+| Task A: エンコーダー配線 | Gemini | 📋 指示中 | `hardware/20260423_phase5_3_encoder_wiring_implementation.md` | - |
+| Task B〜F: オドメトリ + 場所記述 + マップ管理 + wiki更新 + 統合テスト | Antigravity | 📋 指示中 | `coding/20260423_phase5_3_place_memory_implementation.md` | - |
 
 #### Phase 5.4以降（将来・着手時期未定）
 
@@ -263,3 +270,7 @@ Navigation Q-learning / 動的PRIMING更新 / YOLOv8 nano / REM睡眠模倣
 - **✅ 複数アクション連鎖対応（2026-04-18、ClaudeCode直接対応）**: `gakukoma_brain.py` の SYSTEM_PROMPT に「複合指示はツールを順番に呼び出して達成する」を追記。PRIMING_EXAMPLES に複数ステップの例（前進→右旋回）を追加。既存の `_call_api()` whileループがツール連鎖を処理するため追加実装不要。
 - **✅ max_tokens 200→512へ拡張（2026-04-22、ClaudeCode直接対応）**: 複数ツール連鎖（特に `see_around` 後の複合報告）で200トークン超過→空文字列返却→沈黙になる問題を修正。`gakukoma_brain.py:286` を `max_tokens=512` に変更。SOULルール（2〜3文以内）が守られている限り実際の生成トークンは少ないため、レスポンス速度・コストへの影響は最小限。
 - **✅ 自律探索行動の有効化（2026-04-22、ClaudeCode直接対応）**: 「あたりを動き回って見まわして」のような開放的指示に対して、Claude自身がmove_robot+see_aroundを計画・連続呼び出しできるよう対応。①SYSTEM_PROMPTに「探索系指示はツールを3〜5セット繰り返して達成する・実況speak_text可」を追記、②PRIMINGに探索の具体例を追加、③`_call_api()` にMAX_TOOL_ITERATIONS=20の安全上限を追加（無限ループ防止）。
+- **✅ sing_song ツール実装・バグ修正完了（2026-04-24）**: LLMが音符列をその場で生成して渡す設計。公共ドメイン曲・自作メロディ・雰囲気指定（「悲しく」等）に対応。演奏前にPanTiltControllerを初期化し、累積0.3秒ごとに左右交互に首振り（リズム連動）。演奏後に正面戻し。**⚠️ スレッド設計は使わないこと**: I2C初期化が遅く短い曲で首が動かなくなる（初回実装で判明）。演奏ループに直接組み込む方式が正解。
+- **✅ memory_processor cross-referenceエラー修正（2026-04-24、ClaudeCode直接対応）**: `_update_cross_references()` でLLMが返すJSONの `related_section` 文字列にリテラル改行が混入し `json.JSONDecodeError: Unterminated string` が発生していた問題を修正。`related_section`（マークダウン文字列）を廃止し、`related_places` / `related_people` / `related_memories` のリスト形式に変更。Python側でマークダウンを組み立てることで改行混入問題を根本排除。
+- **✅ memory_processor cross-reference/lintエラー再発修正（2026-04-27、ClaudeCode直接対応）**: 2026-04-24の修正後も `_update_cross_references()` と `lint_wiki()` でJSONパースエラーが継続していた問題を修正。原因: LLMが `rem_association`（1〜2文の自由記述）などの文字列値にリテラル改行を混入させることが引き続き発生。対策: `_safe_parse_json()` ヘルパーを追加し、初回パース失敗時に全リテラル改行をスペース化して再試行するようにした。構造的な改行もスペースになるがjsonとして問題なし。`import re` もトップレベルに追加。
+- **✅ voice_loop ACTIVEモードXRUNバグ修正（2026-04-27、ClaudeCode直接対応）**: 会話の途中で音声認識が止まる（LED緑のまま）問題を修正。原因: `sd.InputStream` をセッション全体で共有したまま thinking+call_brain+speak（合計10〜30秒超）の間バッファを読まず ALSA XRUN が発生、その後の `stream.read()` が無期限ブロックしていた。sing_song 追加でTTS長時間化が引き金に。対策（案A）: ストリームをlistenサイクルごとに開き直す方式に変更。`flush_stream()` 呼び出しも不要になったため削除。

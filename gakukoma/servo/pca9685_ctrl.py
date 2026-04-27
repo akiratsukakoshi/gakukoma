@@ -13,7 +13,18 @@ class PCA9685Controller:
     def __init__(self):
         try:
             i2c = busio.I2C(board.SCL, board.SDA)
-            self.pca = adafruit_pca9685.PCA9685(i2c)
+            # I2Cスキャンで検出されたアドレスを試みる（0x40→0x42にアドレスが変化した場合に対応）
+            detected_addr = None
+            for addr in [0x40, 0x42, 0x41, 0x43]:
+                try:
+                    self.pca = adafruit_pca9685.PCA9685(i2c, address=addr)
+                    detected_addr = addr
+                    break
+                except Exception:
+                    continue
+            if detected_addr is None:
+                raise RuntimeError("PCA9685が見つかりません（0x40/0x41/0x42/0x43を試行）")
+            print(f"PCA9685を検出: address=0x{detected_addr:02X}")
             self.pca.frequency = self.SERVO_FREQ
         except Exception as e:
             print(f"サーボドライバの初期化に失敗しました: {e}")
