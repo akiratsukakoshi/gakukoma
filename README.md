@@ -48,6 +48,7 @@ voice_loop.py  ── メインループ（4ステートマシン: idle/listenin
     ├─ VAD: webrtcvad による自動発話検出
     ├─ LED: RGB LED ステート可視化
     ├─ GestureController: パンチルトジェスチャー
+    ├─ sing_song: LLMが音符列を生成して演奏・首振りリズム連動
     ├─ 退屈行動: アイドル一定時間後に自発的な視線移動・移動・呟き
     │
     └─ GAKUKOMABrain（brain/gakukoma_brain.py）
@@ -73,7 +74,7 @@ voice_loop.py  ── メインループ（4ステートマシン: idle/listenin
 ONLINE（会話中・Haiku）     OFFLINE（深夜3時 cron・Sonnet）
 ─────────────────           ─────────────────────────────────────────
 wiki を参照するだけ    →    Step 1: 会話分析（emotion_score + surprise_score）
-レイテンシー最優先          Step 2: core_memories.md 更新（感情スコア8以上）
+レイテンシー最優先          Step 2: core_memories.md 更新（感情スコア7以上）
                             Step 2b: surprises.md 更新（驚きスコア6以上）
                             Step 3: people/ ページ更新
                             Step 3b: places/ ページ更新
@@ -93,18 +94,24 @@ memory/
 │   └── 2026-04-18_143052.md
 └── wiki/             長期記憶（恒久保存）
     ├── index.md            カタログ + 出来事時系列（登場人物・場所リンク付き）
-    ├── core_memories.md    感情スコア8以上の核記憶
+    ├── core_memories.md    感情スコア7以上の核記憶
     ├── surprises.md        驚きスコア6以上の予測誤差記録
     ├── dreams.md           REM連想（Lint時に生成・翌朝の自発発話の源泉）
     ├── log.md              wiki更新の時系列ログ（append-only）
     ├── lint_report.md      週次健全性レポート（矛盾・孤立・改善提案）
+    ├── known_names.json    人名エイリアステーブル（名寄せ・重複ページ防止）
     ├── people/             人物ページ（自動更新・cross-reference付き）
     │   ├── 学長.md
     │   ├── そのさん.md
-    │   └── ソータ.md
+    │   ├── ソータ.md
+    │   ├── がくこま.md
+    │   └── キョンキョン.md
     └── places/             場所ページ（自動更新・トポロジ情報付き）
-        ├── がくこまの部屋.md
-        └── リビング.md
+        ├── がくこまの部屋（和室）.md
+        ├── リビング.md
+        ├── 外.md
+        ├── 家の中.md
+        └── 庭.md
 ```
 
 人間の脳に倣い、**「何を忘れるか」の設計が記憶の質を決める**。日常的な会話は7日で消え、感情的に重要な体験だけが核記憶として長期保存される。
@@ -135,15 +142,17 @@ gakukoma/
 │   ├── raw/                   # セッション生ログ（7日保持）
 │   └── wiki/                  # 長期記憶（恒久保存）
 │       ├── index.md           # カタログ + 時系列
-│       ├── core_memories.md   # 感情スコア8以上の核記憶
+│       ├── core_memories.md   # 感情スコア7以上の核記憶
 │       ├── surprises.md       # 驚きスコア6以上の予測誤差記録
 │       ├── dreams.md          # REM連想（週次生成）
 │       ├── log.md             # 更新ログ（append-only）
 │       ├── lint_report.md     # 週次健全性レポート
+│       ├── known_names.json   # 人名エイリアステーブル（名寄せ）
 │       ├── people/
 │       └── places/
 ├── voice_loop/
 │   ├── voice_loop.py          # メインループ（4ステートマシン）
+│   ├── led_controller.py      # RGB LED ステート可視化
 │   └── config.yaml            # 全設定（音声・サーボ・VAD・idle_behavior等）
 ├── tools/                     # シェルスクリプト（ツール実行インターフェース）
 │   ├── speak_text.sh
@@ -153,7 +162,9 @@ gakukoma/
 │   ├── look_center.sh
 │   ├── look_at_user.sh
 │   ├── set_pan_tilt.sh
-│   └── move_robot.sh
+│   ├── move_robot.sh
+│   ├── sing_song.sh           # 音符列演奏 + 首振りリズム連動
+│   └── sing_song.py
 ├── tts/
 │   └── speak_text.py          # Open JTalk TTS（meiモデル）
 ├── stt/
@@ -165,9 +176,11 @@ gakukoma/
 │   ├── tb6612_ctrl.py         # TB6612FNG 低レベル制御
 │   ├── motor_driver.py        # モータードライバ抽象層
 │   └── move_robot_cmd.py      # move_robot コマンド実装
-├── camera/
-│   └── ...                    # OpenCV + Vision API
-└── led_controller.py          # RGB LED ステート可視化
+└── camera/
+    ├── see_around.py          # OpenCV + Claude Vision API
+    ├── face_detect.py         # 顔検出（OpenCV Haar）
+    ├── face_recognizer.py     # 顔認識（face_recognition / dlib）
+    └── capture.py             # カメラキャプチャ
 ```
 
 ---
@@ -199,19 +212,19 @@ python3 voice_loop.py
 | Phase 3 | タンク走行（TB6612FNG / move_robot / 電源独立） | ✅ 完了 |
 | Phase 4 | グリッパー把持 | ⏸ 保留 |
 | **Phase 5.1** | **LLM Wiki型記憶システム + 退屈行動** | ✅ **完了** |
-| Phase 5.2 | 顔認識 + person-wiki（face_recognition） | ⬜ 未着手 |
-| Phase 5.3 | 場所記憶 + エンコーダー活用（トポロジカルマップ） | ⬜ 未着手 |
+| Phase 5.x | sing_song ツール（音符列演奏・首振りリズム連動） | ✅ 完了 |
+| Phase 5.2 | 顔認識 + person-wiki（face_recognition） | ✅ 完了 |
+| Phase 5.3 | 場所記憶 + エンコーダー活用（トポロジカルマップ） | 📋 指示中 |
 | Phase 5.4〜 | Navigation Q-learning / PRIMING動的更新 / YOLO物体検出 | ⬜ 将来 |
 
 ---
 
 ## 今後の開発ロードマップ（Phase 5.2以降）
 
-### Phase 5.2：顔認識 + person-wiki
+### Phase 5.2：顔認識 + person-wiki ✅ 実装済み
 - `face_recognition`（dlib）ライブラリによる顔識別
 - `look_at_user()` 実行時に「誰か」を識別して名前で呼びかける
 - person-wiki（`memory/wiki/people/`）をOFFLINE処理で自動更新
-- 前提：Phase 5.1を3週間運用してwikiが育ってから着手推奨
 
 ### Phase 5.3：場所記憶 + エンコーダー活用
 - `move_robot()` 後に `see_around()` で場所を自動記述・保存
@@ -273,12 +286,18 @@ rm -rf /home/tukapontas/gakukoma/brain/
 ## cron設定（自動実行）
 
 ```
-0 3 * * *  python3 /home/tukapontas/gakukoma/brain/memory_processor.py
-           >> /home/tukapontas/gakukoma/memory/processor.log 2>&1
+0  3 * * *  python3 /home/tukapontas/gakukoma/brain/memory_processor.py >> /home/tukapontas/gakukoma/memory/processor.log 2>&1
+30 3 * * *  /home/tukapontas/gakukoma/backup_memory.sh
 ```
 
 毎朝3時にOFFLINE処理を実行。RAWログを分析してwikiを更新し、7日超の古いログを削除する。
+3時30分に `backup_memory.sh` が実行され、`memory/wiki/` と `camera/face_data/` をGoogle Driveに自動バックアップする（rclone sync）。
+
+## プライバシーとgit管理
+
+`gakukoma/memory/` と `camera/face_data/` はgit管理対象外（`.gitignore`）。個人の会話ログ・人物wiki・顔認識モデルはリポジトリに含まれない。
+これらのバックアップはGoogle Drive（`gakukoma_backup/`）で管理する。
 
 ---
 
-*最終更新: 2026-04-23（記憶システムv2: Sonnet移行・Cross-reference・Lint・surprise_score・dreams/log追加）*
+*最終更新: 2026-04-28（Phase 5.2完了・sing_song追加・感情スコア閾値7に変更・Google Driveバックアップ追加・リポジトリ公開対応）*
