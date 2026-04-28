@@ -1,0 +1,30 @@
+# 許可リスト方式: まずすべて無視し、追跡対象だけ明示的に許可する
+
+/*
+
+# README
+!/README.md
+
+# コード
+!/gakukoma/
+
+# プロジェクト管理ドキュメント
+!/a2a/
+
+# 脳設定（AGENTS.md / SOUL.md / TOOLS.md / memory/ 等）
+!/.openclaw/
+/.openclaw/*
+!/.openclaw/workspace/
+
+# APIキー・認証情報は絶対除外
+.openclaw/openclaw.json
+
+# 個人情報・プライバシー（公開リポジトリから除外）
+gakukoma/memory/
+gakukoma/camera/face_data/
+.openclaw/workspace/memory/
+
+# Pythonキャッシュ
+**/__pycache__/
+**/*.pyc
+**/*.pyo
