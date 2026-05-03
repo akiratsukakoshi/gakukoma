@@ -82,8 +82,8 @@ wiki を参照するだけ    →    Step 1: 会話分析（emotion_score + surp
                             Step 5: Cross-reference 更新（## 関連セクション）
                             log.md: 更新ログ追記
                             ─────────────────────────────────────────
+                            毎日: generate_daily_dream（過去記憶ランダム連想 → dreams.md）
                             週次（月曜）: Lint（矛盾検出・孤立ページ・改善提案）
-                                         dreams.md（REM連想生成）
 ```
 
 ### 3層記憶構造
@@ -114,10 +114,11 @@ memory/
 
 | 確率 | 行動 |
 |---|---|
-| 50% | ランダムな方向を向く |
-| 15% | 少し前進してすぐ止まる |
-| 5% | 呟く（「今日は静かだな」等） |
-| 30% | 何もしない |
+| 50% | ランダムな方向を見てカメラで画像取得 → Haiku で感想を生成して呟く |
+| 10% | 少し前進してすぐ止まる |
+| 15% | `dreams.md` の最新エントリを「昨日ふと思ったんだけど」として呟く |
+| 15% | `wiki/index.md` や `core_memories.md` をもとに Haiku で独り言を生成して呟く |
+| 10% | 何もしない |
 
 深夜22時〜朝7時はOFF。`config.yaml` の `idle_behavior.interval_sec` で間隔を調整可能。
 
@@ -136,7 +137,7 @@ gakukoma/
 │       ├── index.md           # カタログ + 時系列
 │       ├── core_memories.md   # 感情スコア7以上の核記憶
 │       ├── surprises.md       # 驚きスコア6以上の予測誤差記録
-│       ├── dreams.md          # REM連想（週次生成）
+│       ├── dreams.md          # REM連想（毎日生成・翌日の退屈行動・会話で引用）
 │       ├── log.md             # 更新ログ（append-only）
 │       ├── lint_report.md     # 週次健全性レポート
 │       ├── known_names.json   # 人名エイリアステーブル（名寄せ）
@@ -170,9 +171,11 @@ gakukoma/
 │   └── move_robot_cmd.py      # move_robot コマンド実装
 └── camera/
     ├── see_around.py          # OpenCV + Claude Vision API
-    ├── face_detect.py         # 顔検出（OpenCV Haar）
-    ├── face_recognizer.py     # 顔認識（face_recognition / dlib）
-    └── capture.py             # カメラキャプチャ
+    ├── face_detect.py         # 顔検出（YuNet DNN / Haar Cascadeフォールバック）
+    ├── face_recognizer.py     # 顔認識（LBPH・多フレーム登録・YuNet共有）
+    ├── capture.py             # カメラキャプチャ
+    └── models/
+        └── face_detection_yunet_2023mar.onnx  # YuNet顔検出モデル（OpenCV Zoo）
 ```
 
 ---
@@ -214,8 +217,10 @@ python3 voice_loop.py
 ## 今後の開発ロードマップ（Phase 5.2以降）
 
 ### Phase 5.2：顔認識 + person-wiki ✅ 実装済み
-- `face_recognition`（dlib）ライブラリによる顔識別
+- **顔検出**: YuNet（DNN/ONNX）— Haar Cascadeより横顔・距離変化に強い
+- **顔認識**: OpenCV LBPH — 登録時15フレーム収集 × 9バリエ拡張（最大135サンプル）
 - `look_at_user()` 実行時に「誰か」を識別して名前で呼びかける
+- `register_face` ツール: 「がくこま、これが〇〇だよ」で顔登録
 - person-wiki（`memory/wiki/people/`）をOFFLINE処理で自動更新
 
 ### Phase 5.3：場所記憶 + エンコーダー活用
@@ -228,8 +233,7 @@ python3 voice_loop.py
 - **Navigation Q-learning**: 部屋のマップ上で経路を自律学習
 - **動的PRIMING更新**: 週次でユーザー反応の良い応答パターンを自動学習
 - **YOLOv8 nano物体検出**: `see_around()` に物体認識を追加
-- **REM睡眠模倣**: ✅ 実装済み（dreams.md生成）。`gakukoma_brain.py` への注入はPhase 5.2以降
-- **退屈行動の拡張（novelty-seeking）**: アイドル時にカメラで撮影→初めて見るものに反応
+- **REM睡眠模倣**: ✅ 実装済み（毎日dreams.md生成 + gakukoma_brain.py への注入 + 退屈行動での引用）
 
 ### 将来的なハードウェア追加候補
 - IMU（MPU-6050, ~$2）: 傾き・加速度・転倒検知
@@ -292,4 +296,4 @@ rm -rf /home/tukapontas/gakukoma/brain/
 
 ---
 
-*最終更新: 2026-04-28（Phase 5.2完了・sing_song追加・感情スコア閾値7に変更・Google Driveバックアップ追加・リポジトリ公開対応）*
+*最終更新: 2026-05-03（夢・ひらめき機能追加・退屈行動強化：see_around感想/夢引用/記憶呟き・YuNet顔認識換装・起動ボタン実装中）*

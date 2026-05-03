@@ -183,9 +183,16 @@ rm -rf /home/tukapontas/gakukoma/brain/
 | Task A: エンコーダー配線 | Gemini | 📋 指示中 | `hardware/20260423_phase5_3_encoder_wiring_implementation.md` | - |
 | Task B〜F: オドメトリ + 場所記述 + マップ管理 + wiki更新 + 統合テスト | Antigravity | 📋 指示中 | `coding/20260423_phase5_3_place_memory_implementation.md` | - |
 
+#### 夢・ひらめき + 退屈行動強化（並行タスク）
+
+| タスク | 担当 | 状態 | 指示書 | 完了報告書 |
+|---|---|---|---|---|
+| 夢生成（毎日cron）+ 会話コンテキスト注入 | gakukoma-coder | ✅ 完了 | `coding/20260503_dream_implementation.md` | `coding/20260503_dream_implementation_completed.md` |
+| 退屈行動強化（see_around感想・夢引用・記憶呟き） | gakukoma-coder | ✅ 完了 | - | - |
+
 #### Phase 5.4以降（将来・着手時期未定）
 
-Navigation Q-learning / 動的PRIMING更新 / YOLOv8 nano / REM睡眠模倣
+Navigation Q-learning / 動的PRIMING更新 / YOLOv8 nano
 
 ---
 

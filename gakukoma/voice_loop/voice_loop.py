@@ -8,6 +8,7 @@ import wave
 import collections
 import random
 import numpy as np
+from pathlib import Path
 import sounddevice as sd
 import webrtcvad
 from datetime import datetime
@@ -129,37 +130,117 @@ class VoiceLoop:
 
         roll = random.random()
         if roll < 0.50:
-            # 50%: ランダムな方向を見る
-            direction = random.choice(["left", "right", "up", "front"])
-            subprocess.run(
-                ["/home/tukapontas/gakukoma/tools/look_direction.sh", direction],
-                capture_output=True
-            )
-        elif roll < 0.65:
-            # 15%: 少し前進してすぐ止まる
-            subprocess.run(
-                ["/home/tukapontas/gakukoma/tools/move_robot.sh", "forward", "0.4"],
-                capture_output=True
-            )
-            import time
-            time.sleep(0.5)
-            subprocess.run(
-                ["/home/tukapontas/gakukoma/tools/move_robot.sh", "stop", "0"],
-                capture_output=True
-            )
-        elif roll < 0.70:
-            # 5%: 呟く（音声出力）
-            phrases = [
-                "んー、なんか音がしたような気がした",
-                "今日は静かだな",
-                "ちょっと周りを見てみようかな",
-            ]
-            text = random.choice(phrases)
-            subprocess.run(
-                ["/home/tukapontas/gakukoma/tools/speak_text.sh", text],
-                capture_output=True
-            )
-        # 残り30%: 何もしない
+            # 50%: ランダムな方向を見て感想を呟く
+            try:
+                direction = random.choice(["left", "right", "up", "front"])
+                subprocess.run(
+                    ["/home/tukapontas/gakukoma/tools/look_direction.sh", direction],
+                    capture_output=True
+                )
+                result = subprocess.run(
+                    ["python3", "/home/tukapontas/gakukoma/camera/see_around.py"],
+                    capture_output=True, text=True, timeout=30
+                )
+                scene_text = result.stdout.strip()
+                if not scene_text:
+                    return
+                resp = self.brain.client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=80,
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            f"ロボット「がくこま」が{direction}方向を見て、こんな景色を見た：\n{scene_text[:300]}\n\n"
+                            "がくこまとして、見た感想を1文で呟いてください。"
+                            "タチコマのように子供っぽい好奇心で。Markdownなし・絵文字なし。"
+                        )
+                    }]
+                )
+                comment = resp.content[0].text.strip()
+                speak(comment, self.tts_engine)
+            except Exception as e:
+                print(f"idle action error: {e}")
+                return
+
+        elif roll < 0.60:
+            # 10%: 少し前進してすぐ止まる
+            try:
+                subprocess.run(
+                    ["/home/tukapontas/gakukoma/tools/move_robot.sh", "forward", "0.4"],
+                    capture_output=True
+                )
+                time.sleep(0.5)
+                subprocess.run(
+                    ["/home/tukapontas/gakukoma/tools/move_robot.sh", "stop", "0"],
+                    capture_output=True
+                )
+            except Exception as e:
+                print(f"idle action error: {e}")
+                return
+
+        elif roll < 0.75:
+            # 15%: dreams.md の最新エントリを呟く
+            try:
+                dreams_path = Path("/home/tukapontas/gakukoma/memory/wiki/dreams.md")
+                if not dreams_path.exists():
+                    return
+                content = dreams_path.read_text(encoding="utf-8")
+                sections = []
+                current = []
+                for line in content.split("\n"):
+                    if line.startswith("## ") and len(line) == 13:
+                        if current:
+                            sections.append("\n".join(current))
+                        current = [line]
+                    elif current and not line.startswith("<!--"):
+                        current.append(line)
+                if current:
+                    sections.append("\n".join(current))
+                if not sections:
+                    return
+                latest = sections[-1].strip()
+                lines = [l for l in latest.split("\n") if l and not l.startswith("##")]
+                dream_text = " ".join(lines).strip()
+                if not dream_text:
+                    return
+                speak(f"昨日ふと思ったんだけど。{dream_text}", self.tts_engine)
+            except Exception as e:
+                print(f"idle action error: {e}")
+                return
+
+        elif roll < 0.90:
+            # 15%: 直近の記憶をもとに呟く
+            try:
+                wiki_dir = Path("/home/tukapontas/gakukoma/memory/wiki")
+                memory_text = ""
+                index_path = wiki_dir / "index.md"
+                core_path = wiki_dir / "core_memories.md"
+                if index_path.exists():
+                    memory_text = index_path.read_text(encoding="utf-8")[:600]
+                elif core_path.exists():
+                    memory_text = core_path.read_text(encoding="utf-8")[:600]
+                if not memory_text.strip():
+                    return
+                resp = self.brain.client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=80,
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            f"ロボット「がくこま」の最近の記憶：\n{memory_text}\n\n"
+                            "がくこまとして、この記憶をもとに独り言を1文で呟いてください。"
+                            "「〇〇のこと、なんか気になるな」「〇〇って面白いよね」のような子供っぽい感想。"
+                            "Markdownなし・絵文字なし。"
+                        )
+                    }]
+                )
+                mutter = resp.content[0].text.strip()
+                speak(mutter, self.tts_engine)
+            except Exception as e:
+                print(f"idle action error: {e}")
+                return
+
+        # 残り10%: 何もしない
 
     def is_wakeword(self, text: str) -> bool:
         return "おはよう" in text or "お早う" in text
