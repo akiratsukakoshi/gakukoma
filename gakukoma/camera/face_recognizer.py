@@ -2,12 +2,13 @@
 顔認識クラス。顔の登録・識別・データ管理を行う。
 
 - ライブラリ: OpenCV LBPH（dlib/face_recognitionのビルドが失敗したため代替採用）
-- データ保存: camera/face_data/{name}.yml（LBPHモデルファイル）
-              camera/face_data/{name}_label.txt（ラベル→名前マッピング）
-- 識別閾値: confidence < 70（LBPHの信頼度は低いほど一致度高い）
+- 顔検出: YuNet（DNN）を優先、モデル未配置時は Haar Cascade にフォールバック
+- データ保存: camera/face_data/_model.yml（LBPHモデルファイル）
+              camera/face_data/_labels.txt（ラベル→名前マッピング）
+- 識別閾値: confidence < LBPH_THRESHOLD（LBPHの信頼度は低いほど一致度高い）
 
 公開インターフェイスは face_recognition ライブラリ版と同一:
-    register(image_frame, name: str) -> bool
+    register(image_frame, name: str, extra_frames: list = None) -> bool
     identify(image_frame) -> str | None
     list_registered() -> list[str]
     delete(name: str) -> bool
@@ -27,31 +28,18 @@ FACE_DATA_DIR = Path("/home/tukapontas/gakukoma/camera/face_data")
 # LBPHは低い値ほど類似度が高い。
 # 1〜数枚サンプルの実環境では 80〜130 程度の値が出る。
 # 誤識別が多い場合は下げる（例: 80）、未識別が多い場合は上げる（例: 130）
-LBPH_THRESHOLD = 165.0
+LBPH_THRESHOLD = 110.0
 
 # 顔サイズが小さすぎる場合は識別をスキップ
 MIN_FACE_WIDTH = 40
 
 
-def _get_cascade():
-    """Haar Cascadeファイルを取得する。"""
-    possible_paths = [
-        os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
-        if hasattr(cv2, 'data') else None,
-        "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml",
-        "/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml",
-    ]
-    for path in possible_paths:
-        if path and os.path.exists(path):
-            return cv2.CascadeClassifier(path)
-    raise RuntimeError("Haar Cascade file not found")
 
 
 class FaceRecognizer:
     def __init__(self):
         """FACE_DATA_DIRを作成し、既存の顔データを全ロードする。"""
         FACE_DATA_DIR.mkdir(parents=True, exist_ok=True)
-        self._cascade = _get_cascade()
         # {name: label_int} マッピング
         self._name_to_label: dict[str, int] = {}
         # {label_int: name} マッピング
@@ -98,43 +86,53 @@ class FaceRecognizer:
             f.write("\n".join(lines) + "\n")
 
     def _detect_faces(self, frame):
-        """フレームから顔ROI（グレースケール）のリストを返す。
+        """face_detect.detect_faces() を使って顔ROI（グレースケール）のリストを返す。
         戻り値: [(gray_roi, x, y, w, h), ...]
         """
+        from camera.face_detect import detect_faces
+        detected = detect_faces(frame)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = self._cascade.detectMultiScale(
-            gray,
-            scaleFactor=1.1,
-            minNeighbors=3,
-            minSize=(30, 30),
-        )
         result = []
-        if len(faces) == 0:
-            return result
-        for (x, y, w, h) in faces:
+        for d in detected:
+            x, y, w, h = d["x"], d["y"], d["w"], d["h"]
             roi = cv2.resize(gray[y:y+h, x:x+w], (100, 100))
-            result.append((roi, int(x), int(y), int(w), int(h)))
+            result.append((roi, x, y, w, h))
         return result
 
-    def register(self, image_frame, name: str) -> bool:
+    def register(self, image_frame, name: str, extra_frames: list = None) -> bool:
         """
         image_frame（numpy array）から顔エンコーディングを取得して保存する。
-        成功: True / 顔が検出できなかった or 複数顔ある: False
+        成功: True / 顔が検出できなかった: False
         登録後はメモリ内のデータも更新する。
 
-        LBPHの精度向上のため、渡された1フレームを輝度変化・軽微なシフトで
-        10バリエーションに水増しして学習する。
-        """
-        detected = self._detect_faces(image_frame)
+        extra_frames: 追加フレームのリスト（optional）。
+            渡すと全フレームから顔ROIを抽出してまとめて学習。
+            メインフレームから顔が検出できなくても、extra_framesから検出できれば登録成功。
 
-        if len(detected) == 0:
+        LBPHの精度向上のため、各ROIを輝度変化・コントラスト調整で9バリエーションに水増しして学習する。
+        実質的なサンプル数: フレーム数 × 9バリエーション
+        """
+        # 全フレームから顔ROIを収集
+        all_frames = [image_frame]
+        if extra_frames:
+            all_frames.extend(extra_frames)
+
+        all_rois = []
+        for frame in all_frames:
+            detected = self._detect_faces(frame)
+            # 各フレームにつき、最大面積の顔のROIのみ採用（複数人いる場合は無視）
+            if len(detected) == 1:
+                roi, x, y, w, h = detected[0]
+                all_rois.append(roi)
+            elif len(detected) > 1:
+                # 最大面積の顔を選択
+                best = max(detected, key=lambda t: t[3] * t[4])
+                roi, x, y, w, h = best
+                all_rois.append(roi)
+
+        if len(all_rois) == 0:
             print(f"[FaceRecognizer] 顔が検出できませんでした（{name}）")
             return False
-        if len(detected) > 1:
-            print(f"[FaceRecognizer] 複数の顔が検出されました（{name}）。1人だけ映るようにしてください。")
-            return False
-
-        roi, x, y, w, h = detected[0]
 
         # ラベルを割り当て（既存名の上書き登録も可）
         if name in self._name_to_label:
@@ -144,12 +142,14 @@ class FaceRecognizer:
             self._name_to_label[name] = label_int
             self._label_to_name[label_int] = name
 
-        # データ水増し: 輝度変化・コントラスト調整で10バリエーション生成
-        augmented = [roi]
-        for alpha in [0.8, 0.9, 1.1, 1.2]:
-            augmented.append(np.clip(roi.astype(np.float32) * alpha, 0, 255).astype(np.uint8))
-        for beta in [-15, -8, 8, 15, 20]:
-            augmented.append(np.clip(roi.astype(np.int16) + beta, 0, 255).astype(np.uint8))
+        # データ水増し: 各ROIを輝度変化・コントラスト調整で9バリエーション生成
+        augmented = []
+        for roi in all_rois:
+            augmented.append(roi)
+            for alpha in [0.8, 0.9, 1.1, 1.2]:
+                augmented.append(np.clip(roi.astype(np.float32) * alpha, 0, 255).astype(np.uint8))
+            for beta in [-15, -8, 8, 15]:
+                augmented.append(np.clip(roi.astype(np.int16) + beta, 0, 255).astype(np.uint8))
 
         labels = np.array([label_int] * len(augmented))
 
@@ -162,7 +162,7 @@ class FaceRecognizer:
         self._recognizer.save(str(self._model_file()))
         self._save_labels()
 
-        print(f"[FaceRecognizer] {name} を登録しました（label={label_int}, サンプル数={len(augmented)}）")
+        print(f"[FaceRecognizer] {name} を登録しました（label={label_int}, フレーム数={len(all_rois)}, サンプル数={len(augmented)}）")
         return True
 
     def identify(self, image_frame) -> str | None:

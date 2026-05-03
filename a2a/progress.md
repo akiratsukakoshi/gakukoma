@@ -167,6 +167,14 @@ rm -rf /home/tukapontas/gakukoma/brain/
 | タスク | 担当 | 状態 | 指示書 | 完了報告書 |
 |---|---|---|---|---|
 | Task A〜E: 顔認識導入 + person-wiki実装 + 統合テスト | Claudeサブエージェント | ✅ 完了 | `coding/20260423_phase5_2_face_recognition_implementation.md` | `coding/20260423_phase5_2_face_recognition_completed.md` |
+| 顔認識改善: Haar Cascade→YuNet換装 + 多フレーム登録 | gakukoma-coder | ✅ 完了 | `coding/20260503_face_recognition_yunet_improvement_implementation.md` | `coding/20260503_face_recognition_yunet_improvement_completed.md` |
+
+#### 物理ボタン起動・停止（並行タスク）
+
+| タスク | 担当 | 状態 | 指示書 | 完了報告書 |
+|---|---|---|---|---|
+| ボタン配線（GPIO23・タクタイルスイッチ） | Gemini | 📋 指示中 | `hardware/20260503_startup_button_wiring_implementation.md` | - |
+| systemd サービス化 + ボタン監視スクリプト実装 | コーディング担当AI | 📋 指示中 | `coding/20260503_startup_button_implementation.md` | - |
 
 #### Phase 5.3：場所記憶 + エンコーダー活用（Phase 5.2 と並行可）
 
@@ -275,5 +283,6 @@ Navigation Q-learning / 動的PRIMING更新 / YOLOv8 nano / REM睡眠模倣
 - **✅ memory_processor cross-referenceエラー修正（2026-04-24、ClaudeCode直接対応）**: `_update_cross_references()` でLLMが返すJSONの `related_section` 文字列にリテラル改行が混入し `json.JSONDecodeError: Unterminated string` が発生していた問題を修正。`related_section`（マークダウン文字列）を廃止し、`related_places` / `related_people` / `related_memories` のリスト形式に変更。Python側でマークダウンを組み立てることで改行混入問題を根本排除。
 - **✅ memory_processor cross-reference/lintエラー再発修正（2026-04-27、ClaudeCode直接対応）**: 2026-04-24の修正後も `_update_cross_references()` と `lint_wiki()` でJSONパースエラーが継続していた問題を修正。原因: LLMが `rem_association`（1〜2文の自由記述）などの文字列値にリテラル改行を混入させることが引き続き発生。対策: `_safe_parse_json()` ヘルパーを追加し、初回パース失敗時に全リテラル改行をスペース化して再試行するようにした。構造的な改行もスペースになるがjsonとして問題なし。`import re` もトップレベルに追加。
 - **✅ voice_loop ACTIVEモードXRUNバグ修正（2026-04-27、ClaudeCode直接対応）**: 会話の途中で音声認識が止まる（LED緑のまま）問題を修正。原因: `sd.InputStream` をセッション全体で共有したまま thinking+call_brain+speak（合計10〜30秒超）の間バッファを読まず ALSA XRUN が発生、その後の `stream.read()` が無期限ブロックしていた。sing_song 追加でTTS長時間化が引き金に。対策（案A）: ストリームをlistenサイクルごとに開き直す方式に変更。`flush_stream()` 呼び出しも不要になったため削除。
+- **✅ Ctrl+C終了時のraw logロスト修正（2026-04-29、ClaudeCode直接対応）**: 「おやすみ」を言わずにCtrl+C終了した場合、`end_session()` が呼ばれずraw logが失われる問題を修正。`voice_loop.py` の `run()` と `run_manual()` 両方の `KeyboardInterrupt` ハンドラに `self.brain.end_session()` を追加。SIGKILL・OSクラッシュは引き続き対象外。
 - **✅ GitHubリポジトリ公開対応（2026-04-28）**: memory/・face_data/・.openclaw/workspace/memory/ をgitignoreに追加。git-filter-repoで過去履歴から個人情報を完全削除。force pushでGitHub反映済み。rclone（Google Drive）による自動バックアップをcron 3:30に設定（`gakukoma/backup_memory.sh`）。リポジトリをpublic設定に変更可能な状態。
 - **✅ memory_processor スケール問題修正・感情スコア閾値変更（2026-04-28、ClaudeCode直接対応）**: cross-referenceエラーの根本原因がmax_tokensではなくwikiページの構造的肥大化・重複生成であることを特定。①重複ページ統合（そのさん/ソータ/がくこまの部屋/自分の部屋の4ファイルを正規ページにマージして削除）、②`wiki/known_names.json` エイリアステーブル + `resolve_name()` による名寄せ実装（以後同一人物が別名で登録されない）、③「最近の話題」を常に最新3件に保つコンパクション実装（古い分は行動パターンに圧縮）、④cross-referenceを「当日更新ページのみ」の差分処理に変更（出力JSON サイズを更新数に比例させる）。合わせてcore_memory保存の感情スコア閾値を8→7に変更。

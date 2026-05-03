@@ -333,13 +333,27 @@ class GAKUKOMABrain:
             if self._face_recognizer is None:
                 return "顔認識モジュールが利用できない"
             try:
+                import time
                 from camera.capture import CameraCapture
                 cam = CameraCapture(device_id=0)
-                frame = cam.capture()
+
+                # ウォームアップ
+                for _ in range(3):
+                    cam.capture()
+
+                # 複数フレーム取得（1.5秒間、15フレーム相当）
+                frames = []
+                for _ in range(15):
+                    f = cam.capture()
+                    if f is not None:
+                        frames.append(f)
+                    time.sleep(0.1)
                 cam.release()
-                if frame is None:
+
+                if not frames:
                     return "カメラから画像を取得できなかった"
-                ok = self._face_recognizer.register(frame, reg_name)
+                # 最初のフレームをメイン、残りをextra_framesとして渡す
+                ok = self._face_recognizer.register(frames[0], reg_name, extra_frames=frames[1:])
                 if ok:
                     return f"{reg_name}の顔を登録した"
                 else:

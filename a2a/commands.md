@@ -30,6 +30,69 @@ Ctrl + C
 
 ---
 
+## 顔認証・顔登録
+
+### 顔を登録する
+
+がくこまが起動中（voice_loop）に話しかける：
+
+```
+「がくこま、これが〇〇だよ」
+```
+
+がくこまが `register_face` ツールを呼び出し、カメラで **15フレーム撮影→LBPH学習** を行う。
+「〇〇の顔を登録した」と返答が来れば成功。
+
+> **ポイント**: カメラ正面に立ち、顔全体が映るようにする。距離は50〜100cm程度が目安。
+
+### 顔を識別する
+
+```
+「誰かいる？」「見て」など
+```
+
+がくこまが `look_at_user` を呼び出してサーボ追跡→識別を行う。
+
+| 識別結果 | がくこまの返答例 |
+|---|---|
+| 登録済みの人物 | 「〇〇がいるね！」と名前で呼ぶ |
+| 未登録の人物 | 「知らない人がいる」 |
+| 顔なし | 「顔が見つからなかった」 |
+
+### 登録済み人物を確認する（デバッグ用）
+
+```bash
+cd /home/tukapontas/gakukoma
+python3 -c "from camera.face_recognizer import FaceRecognizer; print(FaceRecognizer().list_registered())"
+```
+
+### 識別の confidence 値を確認する（閾値チューニング用）
+
+```bash
+cd /home/tukapontas/gakukoma
+python3 look_at_user.py 2>&1 | grep "識別結果"
+# 出力例: [FaceRecognizer] 識別結果: label=0, confidence=85.3
+```
+
+- **confidence が低い（〜80）**: 確実に一致している
+- **confidence が 110 前後**: 閾値付近（不安定）
+- **confidence が高い（130〜）**: 一致していない（unknown）
+
+閾値は `camera/face_recognizer.py` の `LBPH_THRESHOLD = 110.0` を変更する。
+
+### 顔データをリセットして再登録する
+
+```bash
+rm /home/tukapontas/gakukoma/camera/face_data/_model.yml
+rm /home/tukapontas/gakukoma/camera/face_data/_labels.txt
+```
+
+その後、voice_loop 起動中に再度「これが〇〇だよ」で登録しなおす。
+
+> **注意**: 削除すると全員分のデータが失われる（LBPH の仕様）。
+
+---
+
 ## パン・チルト（首振り）
 
 ### 方向指定

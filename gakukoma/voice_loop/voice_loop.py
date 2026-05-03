@@ -383,6 +383,7 @@ class VoiceLoop:
 
         except KeyboardInterrupt:
             print("\nシャットダウン中...")
+            self.brain.end_session()
             speak("がくこまをシャットダウンします。", self.tts_engine)
             self.led.close()
             sys.exit(0)
@@ -423,6 +424,7 @@ class VoiceLoop:
                 
         except KeyboardInterrupt:
             print("\nシャットダウン中...")
+            self.brain.end_session()
             speak("がくこまをシャットダウンします。", self.tts_engine)
             if hasattr(self, 'led'): # Just in case it wasn't initialized
                 self.led.close()
