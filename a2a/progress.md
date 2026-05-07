@@ -173,8 +173,8 @@ rm -rf /home/tukapontas/gakukoma/brain/
 
 | タスク | 担当 | 状態 | 指示書 | 完了報告書 |
 |---|---|---|---|---|
-| ボタン配線（GPIO23・タクタイルスイッチ） | Gemini | 📋 指示中 | `hardware/20260503_startup_button_wiring_implementation.md` | - |
-| systemd サービス化 + ボタン監視スクリプト実装 | コーディング担当AI | 📋 指示中 | `coding/20260503_startup_button_implementation.md` | - |
+| ボタン配線（GPIO23・タクタイルスイッチ） | Gemini | ✅ 完了 | `hardware/20260503_startup_button_wiring_implementation.md` | `hardware/20260503_startup_button_wiring_completed.md` |
+| systemd サービス化 + ボタン監視スクリプト実装 | ClaudeCode | ✅ 完了 | `coding/20260503_startup_button_implementation.md` | `coding/20260503_startup_button_completed.md` |
 
 #### Phase 5.3：場所記憶 + エンコーダー活用（Phase 5.2 と並行可）
 

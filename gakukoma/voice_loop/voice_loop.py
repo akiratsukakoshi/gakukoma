@@ -8,10 +8,18 @@ import wave
 import collections
 import random
 import numpy as np
+import signal
 from pathlib import Path
 import sounddevice as sd
 import webrtcvad
 from datetime import datetime
+
+
+def _install_sigterm_handler():
+    """SIGTERM を KeyboardInterrupt に変換して正常終了フローを通す"""
+    def _handler(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _handler)
 
 # Add parent directory to sys.path to import tts module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -512,6 +520,7 @@ class VoiceLoop:
             sys.exit(0)
 
 def main():
+    _install_sigterm_handler()   # SIGTERM を KeyboardInterrupt に変換
     config = load_config()
     loop = VoiceLoop(config)
     loop.run()
