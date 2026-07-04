@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
 """
 GAKUKOMA Memory Processor（OFFLINE処理）
-深夜3時にcronから実行。RAWログを分析してwikiを更新し、古いログを削除する。
+深夜3時にsystemd timerから実行。未処理RAWログを日付ごとに分析してwikiを更新し、
+処理済み台帳(processed.json)を見て古い処理済みログのみ削除する。
 """
+from __future__ import annotations
 
+import os
 import json
 import re
 import random
-import anthropic
 from pathlib import Path
 from datetime import datetime, timedelta
+
+try:
+    import anthropic
+except ImportError:
+    # anthropicが無い環境（テスト等）でもimport可能にする。
+    # 実APIを使う経路（main→get_api_key→Anthropic）でのみ必要。
+    # テストはスタブclientを渡すため anthropic 本体は不要。
+    anthropic = None
 
 
 def _safe_parse_json(text: str) -> dict:
@@ -29,7 +39,8 @@ def _safe_parse_json(text: str) -> dict:
         # 構造的な改行もスペースになるがjson.loadsはwhitespaceを許容するため問題なし
         return json.loads(re.sub(r'\n', ' ', text))
 
-MEMORY_DIR = Path("/home/tukapontas/gakukoma/memory")
+# MEMORY_DIRは環境変数で差し替え可能（テスト用の最小変更）。未設定なら実機の既定パス。
+MEMORY_DIR = Path(os.environ.get("GAKUKOMA_MEMORY_DIR", "/home/tukapontas/gakukoma/memory"))
 
 
 def resolve_name(raw_name: str, category: str) -> str:
@@ -52,18 +63,55 @@ def get_api_key() -> str:
         oc = json.load(f)
     return oc["models"]["providers"]["anthropic"]["apiKey"]
 
-def load_todays_raw_logs() -> str:
-    """前日のRAWログを全て読み込んで結合する（深夜3時実行のため前日分を処理）"""
-    today = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+def _processed_ledger_path() -> Path:
+    """処理済み台帳 raw/processed.json のパス。"""
+    return MEMORY_DIR / "raw" / "processed.json"
+
+
+def load_processed_ledger() -> dict:
+    """処理済み台帳を読み込む。{"<ファイル名>": "<処理日時ISO>"}。壊れていれば空。"""
+    p = _processed_ledger_path()
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_processed_ledger(ledger: dict):
+    """処理済み台帳を書き出す。"""
+    p = _processed_ledger_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def find_unprocessed_dates() -> list:
+    """未処理のRAWログを日付ごとにグループ化し、古い日付順に返す。
+
+    返り値: [(date_str, [Path, ...]), ...]（古い日付が先頭）
+    条件:
+      (a) processed.json に記録が無い
+      (b) ファイル名日付が「今日より前」（当日分は翌run送り＝日次単位の意味を維持）
+    """
     raw_dir = MEMORY_DIR / "raw"
     if not raw_dir.exists():
-        return ""
-    logs = []
-    for p in sorted(raw_dir.glob(f"{today}_*.md")):
-        content = p.read_text(encoding="utf-8").strip()
-        if content:
-            logs.append(content)
-    return "\n\n---\n\n".join(logs)
+        return []
+    ledger = load_processed_ledger()
+    today = datetime.now().strftime("%Y-%m-%d")
+    groups: dict = {}
+    for p in sorted(raw_dir.glob("*.md")):
+        if p.name in ledger:
+            continue  # 処理済み
+        date_str = p.stem[:10]
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            continue  # 日付として不正なファイル名はスキップ
+        if date_str >= today:
+            continue  # 当日・未来分は処理しない（YYYY-MM-DDは辞書順=日付順）
+        groups.setdefault(date_str, []).append(p)
+    return [(d, groups[d]) for d in sorted(groups.keys())]
 
 def load_existing_wiki_page(page_path: Path) -> str:
     if page_path.exists():
@@ -472,12 +520,17 @@ health_scoreは0〜10の整数（wiki全体の健全度。10=完璧に整合・�
         print(f"lintエラー: {e}")
 
 
-def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str):
-    """RAWログを分析してwikiの各ページを更新する"""
+def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str, date: str) -> bool:
+    """RAWログを分析してwikiの各ページを更新する。
+
+    date: 処理対象日（YYYY-MM-DD）。呼び出し側がグループの日付を渡す。
+    返り値: 分析成功=True / 分析失敗（Step 1例外）=False。
+            Falseの場合、呼び出し側は processed.json に登録しない（次回再試行）。
+    """
 
     if not raw_logs.strip():
         print("本日のRAWログなし。スキップ。")
-        return
+        return True
 
     wiki_dir = MEMORY_DIR / "wiki"
     wiki_dir.mkdir(parents=True, exist_ok=True)
@@ -485,7 +538,7 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str):
     # 既存のwikiページを読み込む
     existing_core = load_existing_wiki_page(wiki_dir / "core_memories.md")
 
-    today = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    today = date
 
     # ---- Step 1: 会話分析 + 感情スコア ----
     analysis_prompt = f"""以下はロボット「がくこま」の本日（{today}）の会話ログです。
@@ -537,9 +590,10 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str):
         analysis = json.loads(analysis_text)
     except Exception as e:
         print(f"分析エラー: {e}")
-        # 最低限のサマリーだけ保存して終了
+        # 最低限のサマリーだけ保存して終了。
+        # ただし processed.json への登録はしない（Falseを返し次回再試行させる）。
         _rebuild_index(wiki_dir, today, f"（分析失敗）本日は会話ログあり")
-        return
+        return False
 
     print(f"分析完了: emotion_score={analysis.get('emotion_score', 0)}, surprise_score={analysis.get('surprise_score', 0)}")
 
@@ -674,6 +728,7 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str):
     _append_to_log(wiki_dir, today, update_log)
 
     print("wiki更新完了")
+    return True
 
 
 def _update_person_wiki(client: anthropic.Anthropic, wiki_dir: Path, raw_logs: str, date: str):
@@ -849,23 +904,77 @@ def _append_to_index(wiki_dir: Path, date: str, summary: str):
     _rebuild_index(wiki_dir, date, summary)
 
 
+def process_unprocessed_logs(client: anthropic.Anthropic):
+    """未処理の日付を古い順に処理する。日付ごとに分析成功した分だけ台帳に記録。
+
+    分析失敗（analyze_and_update_wiki が False を返す／例外）時は登録しない
+    ＝次回runで再試行される。
+    """
+    groups = find_unprocessed_dates()
+    if not groups:
+        print("未処理のRAWログなし。スキップ。")
+        return
+
+    for date_str, files in groups:
+        # 同日付のログを結合（既存の結合フォーマットを踏襲）
+        parts = []
+        for p in files:
+            content = p.read_text(encoding="utf-8").strip()
+            if content:
+                parts.append(content)
+        raw_logs = "\n\n---\n\n".join(parts)
+
+        print(f"--- {date_str} の未処理ログを分析（{len(files)}件）---")
+        try:
+            success = analyze_and_update_wiki(client, raw_logs, date_str)
+        except Exception as e:
+            # 想定外の例外も登録しない（次回再試行）
+            print(f"{date_str} の処理で例外: {e}。processed登録せず。")
+            continue
+
+        if success:
+            ledger = load_processed_ledger()
+            now_iso = datetime.now().isoformat()
+            for p in files:
+                ledger[p.name] = now_iso
+            save_processed_ledger(ledger)
+            print(f"processed.json 記録: {date_str}（{len(files)}件）")
+        else:
+            print(f"{date_str} は分析失敗のため未登録（次回再試行）")
+
+
 def cleanup_old_raw_logs():
-    """7日超のRAWログを削除する"""
+    """processed.json に記録があり、かつ7日超のRAWログのみ削除する。
+
+    削除したファイルは台帳からも除去する（台帳の無限成長防止）。
+    未処理（台帳に無い）ファイルは7日超でも削除しない。
+    """
     cutoff = datetime.now() - timedelta(days=7)
     raw_dir = MEMORY_DIR / "raw"
     if not raw_dir.exists():
         return
+    ledger = load_processed_ledger()
     count = 0
-    for p in raw_dir.glob("*.md"):
+    ledger_changed = False
+    for p in list(raw_dir.glob("*.md")):
+        if p.name not in ledger:
+            continue  # 未処理ログは削除しない
         try:
             # ファイル名の日付でフィルタ（YYYY-MM-DD_HHMMSS.md）
             date_str = p.stem[:10]
             file_date = datetime.strptime(date_str, "%Y-%m-%d")
-            if file_date < cutoff:
+        except ValueError:
+            continue
+        if file_date < cutoff:
+            try:
                 p.unlink()
                 count += 1
-        except (ValueError, OSError):
-            pass
+                del ledger[p.name]
+                ledger_changed = True
+            except OSError:
+                pass
+    if ledger_changed:
+        save_processed_ledger(ledger)
     if count:
         print(f"古いRAWログ {count}件 削除")
 
@@ -873,8 +982,8 @@ def cleanup_old_raw_logs():
 def main():
     print(f"=== Memory Processor 開始 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
     client = anthropic.Anthropic(api_key=get_api_key())
-    raw_logs = load_todays_raw_logs()
-    analyze_and_update_wiki(client, raw_logs)
+    # 未処理の日付を古い順にキャッチアップ処理（成功分のみ台帳登録）
+    process_unprocessed_logs(client)
     cleanup_old_raw_logs()
 
     # 毎日: 夢・ひらめき生成（RAWログ有無にかかわらず実行）

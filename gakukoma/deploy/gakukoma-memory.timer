@@ -1,0 +1,10 @@
+[Unit]
+Description=Run GAKUKOMA memory maintenance daily at 03:00
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+# 3時に電源OFFだった場合、次回起動時に取りこぼしを発火させる
+Persistent=true
+
+[Install]
+WantedBy=timers.target

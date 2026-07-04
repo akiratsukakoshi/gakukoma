@@ -1,0 +1,9 @@
+[Unit]
+Description=GAKUKOMA memory maintenance (processor + backup)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tukapontas
+ExecStart=/home/tukapontas/gakukoma/brain/run_memory_maintenance.sh
