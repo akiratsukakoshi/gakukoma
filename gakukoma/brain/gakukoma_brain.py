@@ -249,12 +249,10 @@ class GAKUKOMABrain:
         raw_path.write_text("\n".join(lines), encoding="utf-8")
         print(f"セッションログを {raw_path} に保存しました")
 
-        # 旧ディレクトリへの後方互換ログも残す（念のため）
-        today = datetime.now().strftime("%Y-%m-%d")
-        legacy_path = LEGACY_MEMORY_DIR / f"{today}.md"
-        if legacy_path.exists():
-            # 旧ファイルがある場合はそのまま（上書きしない）
-            pass
+        # 保存後は履歴とセッションIDをクリアする。
+        # これを怠ると「おやすみ」後のsystemd停止で同一セッションが二重にraw保存される。
+        self.local_history = []
+        self.session_id = None
 
     def _build_message(self, user_text: str) -> str:
         parts = []

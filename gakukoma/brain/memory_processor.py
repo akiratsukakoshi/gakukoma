@@ -56,6 +56,67 @@ def resolve_name(raw_name: str, category: str) -> str:
         return table.get(category, {}).get(raw_name, raw_name)
     except Exception:
         return raw_name
+
+
+def _build_known_names_hint(wiki_dir: Path) -> str:
+    """名寄せ用の「既知の名前リスト」文字列を組み立てる。
+    known_names.jsonのエイリアス表と、people/・places/の既存ページ名を列挙する。
+    STT由来の表記ゆれ（例:「南房総/南坊村/南坊装」）を既知の名前へ正規化させる
+    ためのプロンプト補助。該当が無ければ空文字を返す。
+    """
+    lines = []
+    # エイリアス表
+    known_names_path = wiki_dir / "known_names.json"
+    if known_names_path.exists():
+        try:
+            table = json.loads(known_names_path.read_text(encoding="utf-8"))
+            for category in ("people", "places"):
+                for alias, canonical in table.get(category, {}).items():
+                    lines.append(f"- 「{alias}」→「{canonical}」")
+        except Exception:
+            pass
+    # 既存ページ名（people/・places/のファイル名）
+    for subdir in ("people", "places"):
+        d = wiki_dir / subdir
+        if d.exists():
+            names = sorted(f.stem for f in d.glob("*.md"))
+            if names:
+                label = "人物" if subdir == "people" else "場所"
+                lines.append(f"- 既存{label}ページ: {', '.join(names)}")
+    if not lines:
+        return ""
+    return (
+        "\n\n【既知の名前リスト】（表記ゆれは必ずこのリストの表記に正規化すること）\n"
+        + "\n".join(lines)
+    )
+
+
+def migrate_person_pages() -> int:
+    """people/*.md の旧フィールド名を新フィールド名へ1回だけ変換する（冪等）。
+    「最後に話した日」→「最後に会った日」に統一する。変換対象が無ければ何もしない。
+    2回目以降は旧フィールドが残っていないため無変更（冪等）。
+    返り値: 変更したファイル数。
+    """
+    people_dir = MEMORY_DIR / "wiki" / "people"
+    if not people_dir.exists():
+        return 0
+    replacements = {
+        "最後に話した日": "最後に会った日",
+    }
+    changed = 0
+    for p in sorted(people_dir.glob("*.md")):
+        text = p.read_text(encoding="utf-8")
+        new_text = text
+        for old, new in replacements.items():
+            new_text = new_text.replace(old, new)
+        if new_text != text:
+            p.write_text(new_text, encoding="utf-8")
+            changed += 1
+    if changed:
+        print(f"migrate_person_pages: {changed}件のページを新フィールド名へ変換")
+    return changed
+
+
 OPENCLAW_CONFIG = "/home/tukapontas/.openclaw/openclaw.json"
 
 def get_api_key() -> str:
@@ -540,6 +601,9 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str, date: st
 
     today = date
 
+    # 名寄せ用の既知の名前リスト（Step1分析・場所抽出・人物抽出で共有）
+    known_names_hint = _build_known_names_hint(wiki_dir)
+
     # ---- Step 1: 会話分析 + 感情スコア ----
     analysis_prompt = f"""以下はロボット「がくこま」の本日（{today}）の会話ログです。
 
@@ -572,6 +636,7 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str, date: st
 - 10: 人生レベルの出来事（がくこまの存在や目的に関わる重大体験）
 
 重要: すでにcore_memoriesに記録済みの体験の「繰り返し」はスコアを2〜3下げること。
+{known_names_hint}
 
 注意: JSONのみ返すこと。説明文は不要。"""
 
@@ -627,53 +692,19 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str, date: st
     if surprise_score >= 6 and surprising_moment:
         update_log.append(f"surprises: surprise_score={surprise_score}")
 
-    # ---- Step 3: people/ ページの更新 ----
-    for person in analysis.get("people_mentioned", []):
-        person = resolve_name(person, "people")
-        person_path = wiki_dir / "people" / f"{person}.md"
-        person_path.parent.mkdir(parents=True, exist_ok=True)
-        existing_person = load_existing_wiki_page(person_path)
-
-        update_prompt = f"""ロボット「がくこま」の人物記憶ページを更新してください。
-
-人物名: {person}
-既存ページ:
-{existing_person or "（新規）"}
-
-本日の会話サマリー: {analysis.get('summary', '')}
-新しく判明したこと: {analysis.get('new_facts_about_people', '')}
-最終更新日: {today}
-
-以下のフォーマットでページ全体を返してください（既存情報を保持しながら更新）：
-# {person}
-- 最後に話した日: {today}
-- 初めて会った日: （わかる場合のみ）
-- 関係性: （製作者・家族・友人等）
-- 特徴・好み: （箇条書き）
-- 行動パターン: （いつ現れる・どんな話し方をするか等）
-- がくこまへの感情: （この人はがくこまに対してどういう気持ちを持っているか）
-- 最近の話題: （{today}時点）
-- がくこまの感情メモ: （この人に会うとがくこまはどう感じるか・一言）
-
-重要: 既存ページの情報は**削除せず保持**すること。矛盾する新情報があれば「（更新: {today}）」として上書きし古い情報をコメントアウトしないこと。
-注意: ページのMarkdownのみ返すこと。"""
-
-        try:
-            resp = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=500,
-                messages=[{"role": "user", "content": update_prompt}]
-            )
-            person_path.write_text(resp.content[0].text.strip(), encoding="utf-8")
-            print(f"person-wiki更新: {person}")
-            update_log.append(f"person:{person}")
-            updated_pages.append(f"people/{person}")
-        except Exception as e:
-            print(f"person-wiki更新エラー（{person}）: {e}")
+    # ---- Step 3(廃止): people全文書き直しはStep6 _update_person_wiki に一本化 ----
+    # かつてはここでSonnetにページ全文を再生成させていたが、Step6と二重更新になり
+    # フォーマット不一致（「話した日」vs「会った日」）でページがハイブリッド化していた。
+    # 人物ページの書き手はStep6のみ。people_mentioned / new_facts_about_people は
+    # Step6へ渡して反映する（下記 Step5 参照）。
 
     # ---- Step 3b: places/ ページの更新 ----
     for place in analysis.get("places_mentioned", []):
         place = resolve_name(place, "places")
+        # 「不明」を含む場所名はページ化しない（コード強制。プロンプト任せにしない）
+        if "不明" in place:
+            print(f"place-wiki: 「不明」を含む場所名をスキップ: {place}")
+            continue
         place_path = wiki_dir / "places" / f"{place}.md"
         place_path.parent.mkdir(parents=True, exist_ok=True)
         existing_place = load_existing_wiki_page(place_path)
@@ -696,6 +727,7 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str, date: st
 - 関連する人物: （この場所によく居る人）
 - つながる場所: （ここからどこへ行けるか・どこから来るか）
 - がくこまにとっての意味: （一言）
+{known_names_hint}
 
 注意: ページのMarkdownのみ返すこと。"""
 
@@ -716,11 +748,19 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str, date: st
     summary = analysis.get("summary", "（サマリーなし）")
     _rebuild_index(wiki_dir, today, summary)
 
-    # ---- Step 5: cross-reference の更新（更新ページのみ差分処理）----
-    _update_cross_references(client, wiki_dir, updated_pages)
+    # ---- Step 5: person-wiki の更新（人物ページの唯一の書き手）----
+    # new_facts_about_people を渡して「特徴・好み」へ反映させる。
+    # 更新したページキー（people/<name>）を受け取り cross-reference の差分対象に含める。
+    person_pages = _update_person_wiki(
+        client, wiki_dir, raw_logs, today,
+        new_facts=analysis.get("new_facts_about_people", ""),
+    )
+    for pk in person_pages:
+        updated_pages.append(pk)
+        update_log.append(f"person:{pk.split('/')[-1]}")
 
-    # ---- Step 6: person-wiki の自動更新（最後に会った日・最近の話題）----
-    _update_person_wiki(client, wiki_dir, raw_logs, today)
+    # ---- Step 6: cross-reference の更新（更新ページのみ差分処理）----
+    _update_cross_references(client, wiki_dir, updated_pages)
 
     # ---- log.md への記録 ----
     if not update_log:
@@ -731,14 +771,37 @@ def analyze_and_update_wiki(client: anthropic.Anthropic, raw_logs: str, date: st
     return True
 
 
-def _update_person_wiki(client: anthropic.Anthropic, wiki_dir: Path, raw_logs: str, date: str):
+def _append_new_fact(content: str, fact: str, date: str) -> str:
+    """人物ページに新事実を「- 特徴・好み:」配下へ `  - {事実}（{date}）` で追記する。
+    既に同一行があればスキップ（重複防止）。節が無ければ追加する。冪等。
+    """
+    fact = (fact or "").strip()
+    if not fact:
+        return content
+    fact_line = f"  - {fact}（{date}）"
+    if fact_line in content.split("\n"):
+        return content  # 同一事実の重複追記を防ぐ
+    if "- 特徴・好み:" in content:
+        content = content.replace("- 特徴・好み:", f"- 特徴・好み:\n{fact_line}", 1)
+    else:
+        content = content.rstrip() + f"\n- 特徴・好み:\n{fact_line}\n"
+    return content
+
+
+def _update_person_wiki(client: anthropic.Anthropic, wiki_dir: Path, raw_logs: str,
+                        date: str, new_facts: str = "") -> list:
     """
     RAWログに登場した人物を特定し、wiki/people/各ページを更新する。
+    人物ページの唯一の書き手（旧Step3廃止に伴い一本化）。
 
     処理手順:
     1. Haikuに「このログに登場した人物と、その人との出来事を抽出してJSON返せ」と依頼
     2. JSON結果を基に wiki/people/{name}.md の「最後に会った日」「最近の話題」を更新
     3. ページが存在しない人物は新規作成（初めて会った日=今日）
+    4. new_facts（Step1の new_facts_about_people）があれば「特徴・好み」へ追記（重複防止）
+
+    new_facts: 人物について新しく判明したこと（1つの文字列）。空なら追記しない。
+    返り値: 更新/作成したページキーのリスト（例: ["people/学長"]）。cross-reference差分用。
 
     JSONスキーマ（Haikuに返させる形式）:
     {
@@ -753,10 +816,12 @@ def _update_person_wiki(client: anthropic.Anthropic, wiki_dir: Path, raw_logs: s
     }
     """
     if not raw_logs.strip():
-        return
+        return []
 
     people_dir = wiki_dir / "people"
     people_dir.mkdir(parents=True, exist_ok=True)
+
+    known_names_hint = _build_known_names_hint(wiki_dir)
 
     extract_prompt = f"""以下はロボット「がくこま」の会話ログです（日付: {date}）。
 
@@ -781,7 +846,7 @@ def _update_person_wiki(client: anthropic.Anthropic, wiki_dir: Path, raw_logs: s
 注意:
 - 会話ログに実際に登場した人物のみ抽出すること
 - 人物名が不明な場合は「不明な人物」として記録しない（スキップ）
-- JSONのみ返すこと"""
+- JSONのみ返すこと{known_names_hint}"""
 
     try:
         resp = client.messages.create(
@@ -797,13 +862,18 @@ def _update_person_wiki(client: anthropic.Anthropic, wiki_dir: Path, raw_logs: s
         extract_data = json.loads(extract_text)
     except Exception as e:
         print(f"_update_person_wiki 抽出エラー: {e}")
-        return
+        return []
 
+    updated_keys = []
     for person_entry in extract_data.get("people", []):
         name = person_entry.get("name", "").strip()
         if not name:
             continue
         name = resolve_name(name, "people")
+        # 「不明」を含む人物名はページ化しない（コード強制。プロンプト任せにしない）
+        if "不明" in name:
+            print(f"_update_person_wiki: 「不明」を含む人物名をスキップ: {name}")
+            continue
         last_seen = person_entry.get("last_seen", date)
         recent_topic = person_entry.get("recent_topic", "")
         impression = person_entry.get("impression", "")
@@ -877,6 +947,9 @@ def _update_person_wiki(client: anthropic.Anthropic, wiki_dir: Path, raw_logs: s
                 )
                 print(f"  コンパクション実施: {name} ({len(to_archive)}件を行動パターンへ)")
 
+            # 新事実を「特徴・好み」へ反映（重複防止）
+            content = _append_new_fact(content, new_facts, date)
+
             person_path.write_text(content, encoding="utf-8")
             print(f"_update_person_wiki 更新: {name}")
 
@@ -888,6 +961,7 @@ def _update_person_wiki(client: anthropic.Anthropic, wiki_dir: Path, raw_logs: s
                 f"- 初めて会った日: {date}",
                 f"- 最後に会った日: {last_seen}",
                 "- 関係性: （未記録）",
+                "- 特徴・好み:",
                 "- 最近の話題:",
                 f"  - {date}: {recent_topic}",
                 "- 行動パターン:",
@@ -895,13 +969,15 @@ def _update_person_wiki(client: anthropic.Anthropic, wiki_dir: Path, raw_logs: s
                 "- がくこまの印象:",
                 f"  {impression}" if impression else "  （未記録）",
             ]
-            person_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            content = "\n".join(lines) + "\n"
+            # 新事実を「特徴・好み」へ反映（重複防止）
+            content = _append_new_fact(content, new_facts, date)
+            person_path.write_text(content, encoding="utf-8")
             print(f"_update_person_wiki 新規作成: {name}")
 
+        updated_keys.append(f"people/{name}")
 
-def _append_to_index(wiki_dir: Path, date: str, summary: str):
-    """後方互換性のためのラッパー。_rebuild_index()に委譲する。"""
-    _rebuild_index(wiki_dir, date, summary)
+    return updated_keys
 
 
 def process_unprocessed_logs(client: anthropic.Anthropic):
@@ -982,6 +1058,8 @@ def cleanup_old_raw_logs():
 def main():
     print(f"=== Memory Processor 開始 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
     client = anthropic.Anthropic(api_key=get_api_key())
+    # 旧フィールド名（最後に話した日 等）を新フィールド名へ統一（冪等・対象なしなら無変更）
+    migrate_person_pages()
     # 未処理の日付を古い順にキャッチアップ処理（成功分のみ台帳登録）
     process_unprocessed_logs(client)
     cleanup_old_raw_logs()
