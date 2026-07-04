@@ -66,13 +66,15 @@ wakeword:
   enabled: true              # falseにするとEnterキーモードに戻せる
   chunk_duration: 2.5        # wakeword検出用の録音チャンク長（秒）
   volume_threshold: 200        # 平均音量がこれ以上で録音開始（無音:50, 発声:400-700）
-  
+  monitor_timeout_sec: 5     # この秒数、音量トリガーが来なければモニタリングを一旦打ち切り退屈行動の判定へ（静かな部屋対策）
+
 # VAD設定（Phase 2.1追加）
 vad:
   enabled: true              # falseにするとEnterキーモードに戻せる
-  silence_threshold: 1.5     # 無音継続でSTT渡しとみなす秒数
+  silence_threshold: 1.5     # 発話開始後、無音がこの秒数続いたら録音停止
   aggressiveness: 3          # webrtcvad感度（0〜3、3が最高感度でノイズ誤トリガー抑制）
   min_speech_duration: 0.8   # これ以下は無音として無視（誤検出防止）
+  no_speech_timeout_sec: 90  # activeモードで発話が一度も始まらないままこの秒数経過したらidleへ戻る（立ち去り対策）
 
 # モーター設定（Phase 3追加）
 motor:
@@ -93,7 +95,7 @@ motor:
 # アイドル行動設定（Phase 5.1追加）
 idle_behavior:
   enabled: true
-  interval_sec: 120      # 退屈行動のインターバル（秒）。デフォルト5分
+  interval_sec: 120      # 退屈行動のインターバル（秒）。この秒数アイドルが続くと確率的に自発行動
   time_restriction:      # この時間帯は退屈行動をOFF
     start_hour: 22       # 22時以降はOFF
     end_hour: 7          # 7時以前はOFF

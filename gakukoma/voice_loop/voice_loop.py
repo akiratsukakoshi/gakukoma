@@ -15,6 +15,12 @@ import webrtcvad
 from datetime import datetime
 
 
+# record_vad_from_stream() が「発話が一度も始まらないまま無音タイムアウトした」
+# ことを run() 側へ伝えるためのセンチネル。
+# 「短すぎる音を無視した(None)」や「録音成功(frames list)」とは区別する。
+NO_SPEECH_TIMEOUT = object()
+
+
 def _install_sigterm_handler():
     """SIGTERM を KeyboardInterrupt に変換して正常終了フローを通す"""
     def _handler(signum, frame):
@@ -263,32 +269,45 @@ class VoiceLoop:
             wf.setframerate(self.sample_rate)
             wf.writeframes(b''.join(frames))
 
-    def record_wakeword_candidate(self):
-        """音量閾値を超えたら2秒間録音する"""
+    def record_wakeword_candidate(self, timeout_sec=None):
+        """音量閾値を超えたら2秒間録音してフレーム列を返す。
+
+        timeout_sec 秒(config wakeword.monitor_timeout_sec, デフォルト5)以内に
+        音量トリガーが来なければ None を返す。これにより静かな部屋でも
+        run() が退屈行動の判定に入れる（トリガー後の録音ロジック・戻り値は従来互換）。
+        """
         duration = self.config["wakeword"]["chunk_duration"]
         threshold = self.config["wakeword"]["volume_threshold"]
-        
+        if timeout_sec is None:
+            timeout_sec = self.config["wakeword"].get("monitor_timeout_sec", 5)
+        max_monitor_frames = int(timeout_sec * 1000 / self.frame_duration_ms)
+
         # モニタリング
         with sd.InputStream(device=self.device, channels=1, samplerate=self.sample_rate, dtype='int16') as stream:
             # ストリーム初期化ノイズを捨てる（最初の15フレーム≈450ms）
             for _ in range(15):
                 stream.read(self.frame_size)
-            while True:
+            triggered = False
+            for _ in range(max_monitor_frames):
                 data, _ = stream.read(self.frame_size)
                 # 音量の実効値を簡易計算
                 data_zero_mean = data.astype(np.float32) - np.mean(data)
                 volume = np.mean(np.abs(data_zero_mean))
                 if volume > threshold:
                     print(f"Triggered (vol: {volume})")
+                    triggered = True
                     break
-            
+            if not triggered:
+                # タイムアウト（無音のまま）: 退屈行動の機会を run() に返す
+                return None
+
             # 閾値を超えたら指定秒数録音
             print(f"Recording wakeword candidate for {duration}s...")
             frames = [data.tobytes()]
             for _ in range(int(duration * 1000 / self.frame_duration_ms) - 1):
                 data, _ = stream.read(self.frame_size)
                 frames.append(data.tobytes())
-            
+
             return frames
 
     def flush_stream(self, stream, duration_sec):
@@ -298,24 +317,33 @@ class VoiceLoop:
             stream.read(self.frame_size)
 
     def record_vad_from_stream(self, stream):
-        """開いているストリームからVADで発話を録音する"""
+        """開いているストリームからVADで発話を録音する。
+
+        発話が一度も始まらないまま no_speech_timeout_sec
+        (config vad.no_speech_timeout_sec, デフォルト90秒) 経過したら
+        センチネル NO_SPEECH_TIMEOUT を返す（ユーザーが立ち去った判定用）。
+        発話が始まった後の無音打ち切り(silence_threshold)は従来どおり。
+        """
         silence_threshold = self.config["vad"]["silence_threshold"]
         min_speech_duration = self.config["vad"]["min_speech_duration"]
-        
+        no_speech_timeout = self.config["vad"].get("no_speech_timeout_sec", 90)
+
         silence_frames_max = int(silence_threshold * 1000 / self.frame_duration_ms)
         min_speech_frames = int(min_speech_duration * 1000 / self.frame_duration_ms)
-        
+        no_speech_frames_max = int(no_speech_timeout * 1000 / self.frame_duration_ms)
+
         frames = []
         ring_buffer = collections.deque(maxlen=int(500 / self.frame_duration_ms)) # 500ms pre-roll
-        
+
         triggered = False
         silence_count = 0
         speech_count = 0
-        
+        no_speech_count = 0  # 発話開始前に経過したフレーム数（無音タイムアウト用）
+
         while True:
             data, _ = stream.read(self.frame_size)
             is_speech = self.vad.is_speech(data.tobytes(), self.sample_rate)
-            
+
             if not triggered:
                 ring_buffer.append(data.tobytes())
                 if is_speech:
@@ -327,6 +355,11 @@ class VoiceLoop:
                         ring_buffer.clear()
                 else:
                     speech_count = 0
+                if not triggered:
+                    no_speech_count += 1
+                    if no_speech_count > no_speech_frames_max:
+                        print("Recording aborted (no speech timeout)")
+                        return NO_SPEECH_TIMEOUT
             else:
                 frames.append(data.tobytes())
                 if is_speech:
@@ -403,6 +436,10 @@ class VoiceLoop:
                             self._consecutive_failures = 0
                         else:
                             self._maybe_do_idle_action()
+                    else:
+                        # 音量トリガーがないままモニタリングがタイムアウト
+                        # → 静かな部屋でも退屈行動の判定に入る
+                        self._maybe_do_idle_action()
                 
                 elif self.state in ("listening", "thinking", "speaking"):
                     # ACTIVEモード: listenサイクルごとにストリームを開き直す
@@ -415,6 +452,18 @@ class VoiceLoop:
                                             samplerate=self.sample_rate, dtype='int16') as active_stream:
                             frames = self.record_vad_from_stream(active_stream)
                         # ストリームはここで閉じる。以降の思考・発話中はバッファを持たない。
+
+                        if frames is NO_SPEECH_TIMEOUT:
+                            # ユーザーが立ち去った等で発話がないまま無音タイムアウト。
+                            # sleepword と同等にセッションを畳んで idle へ戻す。
+                            print("無音タイムアウト → IDLEに戻ります")
+                            self.brain.end_session()
+                            speak("じゃあまたね", self.tts_engine)
+                            self.state = "idle"
+                            self.led.set_state("idle")
+                            if self._gesture:
+                                self._gesture.go_center()
+                            continue
 
                         if not frames:
                             continue
