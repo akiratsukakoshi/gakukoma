@@ -7,7 +7,7 @@ import re
 import sys
 import subprocess
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 
 
 SYSTEM_PROMPT = """あなたはフィジカルAIロボット「がくこま」です。Raspberry Pi 5の上で動作し、音声で会話します。
@@ -190,7 +190,6 @@ PRIMING_EXAMPLES = (
 )
 
 MEMORY_DIR = Path("/home/tukapontas/gakukoma/memory")
-LEGACY_MEMORY_DIR = Path("/home/tukapontas/.openclaw/workspace/memory")  # 旧ディレクトリ
 
 
 class GAKUKOMABrain:
@@ -204,7 +203,8 @@ class GAKUKOMABrain:
         self.config = config
         self.session_id = None
         self.local_history = []
-        self.is_first_turn = True
+        # セッション内で固定する記憶スナップショット（プロンプトキャッシュのプレフィックス安定用）
+        self._memory_snapshot = None
 
         # FaceRecognizerは重いので1回だけ初期化（register_face/look_at_user識別で共有）
         try:
@@ -218,9 +218,15 @@ class GAKUKOMABrain:
     def new_session(self):
         self.session_id = str(uuid.uuid4())
         self.local_history = []
-        self.is_first_turn = True
+        # 記憶スナップショットをセッション開始時に1回だけロードし、
+        # セッション中は固定する（system末尾ブロックのプレフィックスが安定し、
+        # tools+system全体がプロンプトキャッシュに乗る）。
+        self._memory_snapshot = self._load_memory_snapshot()
 
     def invoke(self, user_text: str) -> str:
+        # new_session() を経ずに呼ばれた場合の防御。未ロードならその場でロードする。
+        if self._memory_snapshot is None:
+            self._memory_snapshot = self._load_memory_snapshot()
         message = self._build_message(user_text)
         response = self._call_api(message)
         self.local_history.append((user_text, response))
@@ -255,56 +261,44 @@ class GAKUKOMABrain:
         self.session_id = None
 
     def _build_message(self, user_text: str) -> str:
-        parts = []
+        # 記憶と会話例はsystem側（キャッシュ対象）へ移設済み。
+        # 毎ターンのuserメッセージは「直前の会話（最新3ターン）＋今回の発話」だけに軽量化する。
+        if not self.local_history:
+            return user_text
 
-        # Layer 4: 日次メモ（最近3日分）- 全ターンで付加
-        daily_notes = self._load_daily_notes(days=3)
-        if daily_notes:
-            parts.append(f"【最近の記憶】\n{daily_notes}")
+        lines = ["（直前の会話）"]
+        for u, g in self.local_history[-3:]:
+            lines.append(f"ユーザー: {u}")
+            lines.append(f"がくこま: {g}")
+        lines.append("（続き）")
+        return "\n".join(lines) + "\n\n" + user_text
 
-        # Layer 2: few-shot priming（初回ターンのみ）
-        if self.is_first_turn:
-            self.is_first_turn = False
-            parts.append(PRIMING_EXAMPLES + user_text)
-            return "\n\n".join(parts)
-
-        # Layer 3: ローカル履歴（最新3ターン）
-        if self.local_history:
-            lines = ["（直前の会話）"]
-            for u, g in self.local_history[-3:]:
-                lines.append(f"ユーザー: {u}")
-                lines.append(f"がくこま: {g}")
-            lines.append("（続き）")
-            parts.append("\n".join(lines))
-
-        parts.append(user_text)
-        return "\n\n".join(parts)
-
-    def _load_daily_notes(self, days: int = 3) -> str:
+    def _load_memory_snapshot(self) -> str:
         """
-        wikiのindex.md と core_memories.md を読み込んで返す。
-        wikiが存在しない場合（初期状態）は旧ディレクトリのログをフォールバックで読む。
+        wikiのindex.md / core_memories.md / dreams.md を読み込んで記憶スナップショットを返す。
+        wikiが無い場合は空文字（=記憶なし）を返す。実機はwiki稼働済みのため、
+        旧OpenClawディレクトリ・rawログへのフォールバックは持たない。
         """
         wiki_dir = MEMORY_DIR / "wiki"
         index_path = wiki_dir / "index.md"
         core_path = wiki_dir / "core_memories.md"
+        dreams_path = wiki_dir / "dreams.md"
 
         parts = []
 
-        # wiki/index.md が存在する場合（Phase 5.1稼働後）
+        # wiki/index.md
         if index_path.exists():
             index_content = index_path.read_text(encoding="utf-8").strip()
             if index_content:
                 parts.append(f"【記憶インデックス】\n{index_content}")
 
-        # wiki/core_memories.md が存在する場合
+        # wiki/core_memories.md
         if core_path.exists():
             core_content = core_path.read_text(encoding="utf-8").strip()
             if core_content:
                 parts.append(f"【忘れられない記憶】\n{core_content}")
 
-        # wiki/dreams.md の最新2件を読み込む
-        dreams_path = wiki_dir / "dreams.md"
+        # wiki/dreams.md の最新2件
         if dreams_path.exists():
             dreams_content = dreams_path.read_text(encoding="utf-8").strip()
             if dreams_content:
@@ -327,28 +321,6 @@ class GAKUKOMABrain:
                     recent_dreams = "\n".join(sections[-2:]).strip()
                     if recent_dreams:
                         parts.append(f"【最近の夢・思いつき】\n{recent_dreams}")
-
-        # wikiがまだ空（初期状態）の場合は旧ディレクトリをフォールバック
-        if not parts:
-            notes = []
-            for i in range(days):
-                date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-                # 新ディレクトリのrawログを試す
-                raw_files = sorted((MEMORY_DIR / "raw").glob(f"{date}_*.md")) if (MEMORY_DIR / "raw").exists() else []
-                if raw_files:
-                    for p in raw_files[-1:]:  # 当日最後のセッションのみ
-                        content = p.read_text(encoding="utf-8").strip()
-                        if content:
-                            notes.append(f"[{date}]\n{content[:500]}")  # 500文字に制限
-                else:
-                    # 旧ディレクトリ
-                    legacy_path = LEGACY_MEMORY_DIR / f"{date}.md"
-                    if legacy_path.exists():
-                        content = legacy_path.read_text(encoding="utf-8").strip()
-                        if content:
-                            notes.append(f"[{date}]\n{content}")
-            if notes:
-                parts.append(f"【最近の記憶】\n" + "\n\n".join(notes))
 
         return "\n\n".join(parts) if parts else ""
 
@@ -473,6 +445,28 @@ class GAKUKOMABrain:
             return f"実行エラー: {e}"
 
     def _call_api(self, message: str) -> str:
+        # 記憶スナップショット未設定時の防御（invoke経由なら通常は設定済み）。
+        if self._memory_snapshot is None:
+            self._memory_snapshot = self._load_memory_snapshot()
+
+        # systemを2ブロック構成にする。
+        # ブロック1: システムプロンプト＋会話例（PRIMING）。閾値超えのため会話例もsystemに統合。
+        # ブロック2: 記憶スナップショット。最後のブロックにのみcache_controlを付与することで、
+        #            描画順 tools→system の tools＋system全体をプロンプトキャッシュに載せる。
+        #            claude-haiku-4-5の最小キャッシュ可能プレフィックスは4096トークン。
+        memory_text = self._memory_snapshot if self._memory_snapshot else "まだ記憶はない。"
+        system_blocks = [
+            {
+                "type": "text",
+                "text": SYSTEM_PROMPT + "\n\n## 会話例（参考）\n" + PRIMING_EXAMPLES,
+            },
+            {
+                "type": "text",
+                "text": f"【がくこまの記憶】\n{memory_text}",
+                "cache_control": {"type": "ephemeral"},
+            },
+        ]
+
         messages = [{"role": "user", "content": message}]
         tool_call_count = 0
         MAX_TOOL_ITERATIONS = 20
@@ -481,11 +475,7 @@ class GAKUKOMABrain:
             response = self.client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=512,
-                system=[{
-                    "type": "text",
-                    "text": SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"}
-                }],
+                system=system_blocks,
                 tools=TOOLS,
                 messages=messages
             )
