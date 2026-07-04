@@ -390,6 +390,16 @@ class GAKUKOMABrain:
                 return f"顔登録エラー: {e}"
 
         tools_dir = Path("/home/tukapontas/gakukoma/tools")
+
+        # move_robot: duration を 0.0〜10.0秒 にクランプ（CLI側と二重防御）。
+        # 非数値が来た場合はデフォルト1.0秒に落とす。
+        try:
+            mv_duration = min(float(inp.get("duration", 1.0)), 10.0)
+            if mv_duration < 0:
+                mv_duration = 0.0
+        except (TypeError, ValueError):
+            mv_duration = 1.0
+
         dispatch = {
             "speak_text":    [str(tools_dir / "speak_text.sh"), inp.get("text", "")],
             "see_around":    [str(tools_dir / "see_around.sh")],
@@ -401,7 +411,7 @@ class GAKUKOMABrain:
             "move_robot": [
                 str(tools_dir / "move_robot.sh"),
                 inp.get("direction", "stop"),
-                str(inp.get("duration", 1.0)),
+                str(mv_duration),
                 str(inp.get("speed", "")),
             ],
             "sing_song": [
@@ -418,6 +428,22 @@ class GAKUKOMABrain:
                 cmd = dispatch[name]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
                 return result.stdout.strip() or "完了"
+
+            # move_robot: duration上限(10秒)+余裕 で timeout=20 を個別指定し、
+            # 「timeoutがdurationより先に来る」構造を根絶する。万一タイムアウトした
+            # 場合でも stop を1回発行してから返す（最後の防壁）。
+            if name == "move_robot":
+                cmd = dispatch[name]
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+                    return result.stdout.strip() or "完了"
+                except subprocess.TimeoutExpired:
+                    stop_cmd = [str(tools_dir / "move_robot.sh"), "stop", "0", ""]
+                    try:
+                        subprocess.run(stop_cmd, capture_output=True, text=True, timeout=10)
+                    except Exception:
+                        pass
+                    return "タイムアウト（停止済み）"
 
             result = subprocess.run(dispatch[name], capture_output=True, text=True, timeout=30)
             raw_output = result.stdout.strip()
