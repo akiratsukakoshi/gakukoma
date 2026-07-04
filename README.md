@@ -154,7 +154,6 @@ gakukoma/
 ├── tools/                     # シェルスクリプト（ツール実行インターフェース）
 │   ├── speak_text.sh
 │   ├── see_around.sh
-│   ├── survey_room.sh         # 3方向撮影 + Vision API一括
 │   ├── look_direction.sh
 │   ├── look_center.sh
 │   ├── look_at_user.sh
@@ -164,8 +163,6 @@ gakukoma/
 │   └── sing_song.py
 ├── tts/
 │   └── speak_text.py          # Open JTalk TTS（meiモデル）
-├── stt/
-│   └── listen_voice.py        # faster-whisper STT
 ├── servo/
 │   ├── pan_tilt.py            # PCA9685 サーボ制御
 │   └── gesture_controller.py  # ジェスチャー制御
