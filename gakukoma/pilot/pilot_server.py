@@ -51,7 +51,7 @@ INDEX_HTML_PATH = os.path.join(PILOT_DIR, "index.html")
 DEFAULT_CONFIG_PATH = os.path.join(CODE_ROOT, "voice_loop", "config.yaml")
 SPEAK_SCRIPT = os.path.join(CODE_ROOT, "tools", "speak_text.sh")
 
-DEFAULT_PORT = 8800
+DEFAULT_PORT = 8801
 DEFAULT_MAX_SPEED = 70.0
 DEFAULT_DEADMAN_MS = 300
 

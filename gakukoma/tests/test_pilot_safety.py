@@ -259,7 +259,8 @@ def test_d_max_speed_clamp(ps):
     cmd_ok = (resp["ok"] and motor.a == 70 and motor.b == -70)
     # config 既定も検証
     cfg = ps.load_pilot_config()
-    cfg_ok = (cfg["max_speed"] == 70 and cfg["deadman_ms"] == 300 and cfg["port"] == 8800)
+    # WP-D で操縦サーバは 8801 へ移管（8800 は常設ゲートウェイが使用）。
+    cfg_ok = (cfg["max_speed"] == 70 and cfg["deadman_ms"] == 300 and cfg["port"] == 8801)
     _check("(d) 速度がmax_speed(70)でクランプ",
            direct_ok and cmd_ok and cfg_ok,
            f"direct=({l},{r}) cmd=({motor.a},{motor.b}) cfg={cfg}")
@@ -378,8 +379,13 @@ def test_h_stream_failure_isolated(ps):
     """(h) 映像失敗（cv2 import例外・カメラ無し）でも操縦は無傷で継続する。"""
     motor = FakeMotor()
     s = ps.PilotSafety(motor, FakePanTilt(), max_speed=70, deadman_ms=300)
-    # fake=False かつ dev環境に cv2 無し → read_jpeg が import で例外を投げる=映像系失敗。
+    # 映像系の失敗を決定的に注入する。以前は「dev環境に cv2 無し→失敗」に依存していたが、
+    # cv2 と実カメラのある実機では本物のカメラを開いて配信し続け、テストがハングして
+    # カメラを占有する事故が起きた（2026-07-11 実機で実害）。環境に依存させない。
     streamer = ps.CameraStreamer(width=640, height=360, fps=10, quality=60, fake=False)
+    def _boom():
+        raise RuntimeError("injected camera failure")
+    streamer.read_jpeg = _boom   # カメラを開くのは read_jpeg（acquireは参照カウントのみ）
     server = ps.PilotServer(s, {"port": 0, "max_speed": 70, "deadman_ms": 300},
                             streamer=streamer)
     writer = FakeWriter()

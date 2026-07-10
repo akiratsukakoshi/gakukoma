@@ -20,6 +20,21 @@ from datetime import datetime
 # 「短すぎる音を無視した(None)」や「録音成功(frames list)」とは区別する。
 NO_SPEECH_TIMEOUT = object()
 
+# 状態・トリガーファイル（button_monitor の常設ゲートウェイと共有・WP-D）。
+# テスト容易性のため定数化し注入可能に（実機依存を避ける既存流儀に合わせる）。
+#   voice_state : 現在状態(idle/listening/thinking/speaking)。ゲートウェイが可視化に使う。
+#   wake_trigger: スマホからのウェイク注入（存在=要求。IDLEループが消費削除）。
+#   sleep_trigger: スマホからのスリープ注入（存在=要求。ACTIVEループが消費削除）。
+RUN_DIR = "/run/gakukoma"
+VOICE_STATE_FILE = os.path.join(RUN_DIR, "voice_state")
+WAKE_TRIGGER_FILE = os.path.join(RUN_DIR, "wake_trigger")
+SLEEP_TRIGGER_FILE = os.path.join(RUN_DIR, "sleep_trigger")
+# トリガーの鮮度上限（秒）。これより古い残留トリガーは消費せず捨てる。
+# （例: 起動途中で自律モードを止められると未消費の wake_trigger が残り、後日の
+#   自律起動時に突然「はい、なんでしょう」と言い出すのを防ぐ。自律モードの
+#   起動=Whisper読込の数十秒は跨げる長さにしてある）
+TRIGGER_TTL_SEC = 120
+
 
 def _install_sigterm_handler():
     """SIGTERM を KeyboardInterrupt に変換して正常終了フローを通す"""
@@ -96,7 +111,7 @@ class VoiceLoop:
         
         self.state = "idle" # "idle" | "listening" | "thinking" | "speaking"
         self.led = LedController()
-        self.led.set_state("idle")
+        self._set_state("idle")   # LED + 状態ファイル(起動時idle)をまとめて初期化
         self.brain = GAKUKOMABrain(config)
         self.audio_file = self.config["temp"]["audio_file"]
         self._idle_start = None   # アイドル開始時刻（Noneなら非アイドル）
@@ -114,6 +129,63 @@ class VoiceLoop:
         # arecordフォールバックはrecord_device(ALSA文字列)を引き続き使用
         self.device = self.config["audio"].get("sounddevice_device",
                                                 self.config["audio"]["record_device"])
+
+    def _write_voice_state(self, state):
+        """状態ファイルをアトミック(tmp書き→rename)に書き換える。失敗は無視。
+
+        RUN_DIR が無い/権限が無い環境（開発機・テスト）でも例外で落とさない。
+        """
+        try:
+            tmp = VOICE_STATE_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(state)
+            os.replace(tmp, VOICE_STATE_FILE)
+        except OSError:
+            pass
+
+    def _set_state(self, state):
+        """状態遷移の単一チョークポイント: self.state・LED・状態ファイルを一括更新する。
+
+        従来の `self.state = X; self.led.set_state(X)` の全呼出点をこれに集約し、
+        遷移のたびに voice_state ファイル（ゲートウェイの可視化用）を同期する。
+        """
+        self.state = state
+        self.led.set_state(state)
+        self._write_voice_state(state)
+
+    def _consume_trigger(self, path):
+        """トリガーファイルがあれば削除して True（=要求を消費）。無ければ False。
+
+        鮮度が TRIGGER_TTL_SEC を超えた残留トリガーは、削除だけして False（=消費しない）。
+        """
+        try:
+            age = time.time() - os.path.getmtime(path)
+        except OSError:
+            return False
+        try:
+            os.remove(path)
+        except OSError:
+            return False
+        return age <= TRIGGER_TTL_SEC
+
+    def _enter_active_from_wake(self):
+        """ウェイク（ワード検知 / スマホ注入）共通の遷移: 返事 + new_session + listening。"""
+        self._idle_start = None
+        speak("はい、なんでしょう", self.tts_engine)
+        self.brain.new_session()
+        self._set_state("listening")
+        self._consecutive_failures = 0
+
+    def _collapse_to_idle(self, farewell):
+        """会話終了共通の畳み方: end_session + 別れの一言 + idle + 首を正面へ。
+
+        無音タイムアウト・スリープワード・スマホからのスリープ注入で共用する。
+        """
+        self.brain.end_session()
+        speak(farewell, self.tts_engine)
+        self._set_state("idle")
+        if self._gesture:
+            self._gesture.go_center()
 
     def _maybe_do_idle_action(self):
         """
@@ -423,17 +495,17 @@ class VoiceLoop:
                 if self.state == "idle":
                     print("\n[IDLE] ウェイクワード待機中...")
                     frames = self.record_wakeword_candidate()
+                    # スマホからのウェイク注入を確認（record から戻るたび）。
+                    # ウェイクワード検知と同一遷移。gakukoma 起動直後の残留も IDLE 到達時に発火。
+                    if self._consume_trigger(WAKE_TRIGGER_FILE):
+                        self._enter_active_from_wake()
+                        continue
                     if frames:
                         self.save_wav(frames, self.audio_file)
                         text = self.transcribe(self.audio_file, model_type="tiny")
                         print(f"WAKEVOICE: {text}")
                         if self.is_wakeword(text):
-                            self._idle_start = None
-                            speak("はい、なんでしょう", self.tts_engine)
-                            self.brain.new_session()
-                            self.state = "listening"
-                            self.led.set_state("listening")
-                            self._consecutive_failures = 0
+                            self._enter_active_from_wake()
                         else:
                             self._maybe_do_idle_action()
                     else:
@@ -445,9 +517,18 @@ class VoiceLoop:
                     # ACTIVEモード: listenサイクルごとにストリームを開き直す
                     # （思考・発話中の長時間バッファ未読によるALSA XRUN/ハングを防止）
                     while self.state != "idle":
+                        # 各周回頭でスマホからのモード注入を確認する。
+                        # 残留ウェイクは消費して無視。スリープ注入は無音タイムアウトと
+                        # 同一の畳み方で idle へ（反映は次のリッスンサイクル=最大で
+                        # 無音タイムアウト分遅れる。仕様として許容）。
+                        self._consume_trigger(WAKE_TRIGGER_FILE)
+                        if self._consume_trigger(SLEEP_TRIGGER_FILE):
+                            print("スリープ注入 → IDLEに戻ります")
+                            self._collapse_to_idle("じゃあまたね")
+                            continue
+
                         print("\n[LISTENING] 発話待機中...")
-                        self.state = "listening"
-                        self.led.set_state("listening")
+                        self._set_state("listening")
                         with sd.InputStream(device=self.device, channels=1,
                                             samplerate=self.sample_rate, dtype='int16') as active_stream:
                             frames = self.record_vad_from_stream(active_stream)
@@ -457,20 +538,14 @@ class VoiceLoop:
                             # ユーザーが立ち去った等で発話がないまま無音タイムアウト。
                             # sleepword と同等にセッションを畳んで idle へ戻す。
                             print("無音タイムアウト → IDLEに戻ります")
-                            self.brain.end_session()
-                            speak("じゃあまたね", self.tts_engine)
-                            self.state = "idle"
-                            self.led.set_state("idle")
-                            if self._gesture:
-                                self._gesture.go_center()
+                            self._collapse_to_idle("じゃあまたね")
                             continue
 
                         if not frames:
                             continue
 
                         self.save_wav(frames, self.audio_file)
-                        self.state = "thinking"
-                        self.led.set_state("thinking")
+                        self._set_state("thinking")
                         if self._gesture:
                             self._gesture.start_thinking()
                         print("[THINKING] 認識中...")
@@ -485,29 +560,20 @@ class VoiceLoop:
                             if self._consecutive_failures >= 3:
                                 print("連続認識失敗3回 → IDLEに戻ります")
                                 self._consecutive_failures = 0
-                                self.state = "idle"
-                                self.led.set_state("idle")
+                                self._set_state("idle")
                             else:
-                                self.state = "listening"
-                                self.led.set_state("listening")
+                                self._set_state("listening")
                             continue
 
                         self._consecutive_failures = 0
                         print(f"YOU: {text}")
 
                         if self.is_sleepword(text):
-                            self.brain.end_session()
-                            speak("おやすみなさい", self.tts_engine)
-                            self.state = "idle"
-                            self.led.set_state("idle")
-                            # 首をニュートラルポジション（正面）へ戻す
-                            if self._gesture:
-                                self._gesture.go_center()
+                            self._collapse_to_idle("おやすみなさい")
                             continue
 
                         response = self.call_brain(text)
-                        self.state = "speaking"
-                        self.led.set_state("speaking")
+                        self._set_state("speaking")
                         # スピーキングジェスチャー開始（speak() は同期なのでバックグラウンドで実行）
                         if self._gesture:
                             self._gesture.start_speaking()
@@ -516,8 +582,7 @@ class VoiceLoop:
                         if self._gesture:
                             self._gesture.go_center()
                         # flush_stream不要: 次ループ先頭でストリームを新規オープンするため
-                        self.state = "listening"
-                        self.led.set_state("listening")
+                        self._set_state("listening")
 
         except KeyboardInterrupt:
             print("\nシャットダウン中...")

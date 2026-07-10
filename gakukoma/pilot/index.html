@@ -14,6 +14,8 @@
   #app { position: fixed; inset: 0; display: flex; flex-direction: column; gap: var(--gap); padding: var(--gap);
       touch-action: none; }
   #panes { flex: 1 1 0; min-height: 0; display: flex; flex-direction: row; gap: var(--gap); touch-action: none; }
+  /* 非操縦モードでは操作パッドを薄暗く・操作不能に（赤オーバーレイは出さない） */
+  #panes.dim { opacity: .32; pointer-events: none; filter: grayscale(.35); }
 
   .zone { position: relative; flex: 1 1 0; border-radius: 24px; overflow: hidden;
       display: flex; align-items: center; justify-content: center; touch-action: none; }
@@ -55,7 +57,7 @@
       touch-action: none; }
   #stop:active { background: radial-gradient(circle at 42% 38%, #ff9a9a, #e00000); }
 
-  /* connection overlay */
+  /* connection overlay（操縦モードでWS未接続のときだけ表示） */
   #overlay { position: fixed; inset: 0; z-index: 100; display: none;
       align-items: center; justify-content: center; flex-direction: column; gap: 18px;
       background: rgba(150,0,0,.92); text-align: center; padding: 24px; }
@@ -73,6 +75,19 @@
       border: 2px solid rgba(255,255,255,.35); box-shadow: 0 4px 14px rgba(0,0,0,.5); touch-action: none; }
   #view.hide { display: none; }
   #view img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+
+  /* モードウィジェット（左下固定・小型の縦積み・自律モード中でも操作可能。
+     STOP(中央下)・しょうめん(右ペイン下)と重ならない幅に抑える） */
+  #modebox { position: fixed; left: 8px; bottom: 12px; z-index: 45; width: 96px;
+      background: rgba(13,27,42,.88); border: 1px solid rgba(255,255,255,.22); border-radius: 12px;
+      padding: 5px; display: flex; flex-direction: column; gap: 4px;
+      box-shadow: 0 6px 18px rgba(0,0,0,.5); }
+  #modelabel { font-size: 11px; font-weight: 700; text-align: center; opacity: .95; }
+  #modebtns { display: flex; flex-direction: column; gap: 4px; }
+  #modebtns button { border: none; border-radius: 8px; padding: 7px 4px; font-size: 12px; font-weight: 700;
+      color: #fff; background: #2a4a6a; touch-action: manipulation; }
+  #modebtns button.active { background: #2fbf5a; }
+  #modebtns button:active { background: #3a6a9a; }
 </style>
 </head>
 <body>
@@ -100,6 +115,15 @@
 <button id="stop" type="button">STOP</button>
 <div id="dot"></div>
 
+<div id="modebox">
+  <div id="modelabel">…</div>
+  <div id="modebtns">
+    <button type="button" data-mode="pilot">そうじゅう</button>
+    <button type="button" data-mode="auto">じりつ</button>
+    <button type="button" data-mode="wake">おはなし</button>
+  </div>
+</div>
+
 <div id="overlay">
   <div class="big">&#128268;</div>
   <div class="msg">つながっていません</div>
@@ -112,23 +136,39 @@
   var MAX = 100;          // サーバ側で max_speed にクランプされる
   var SEND_MS = 100;      // 約10Hz
 
-  // ---- WebSocket ----------------------------------------------------------
-  var ws = null, wsReady = false, reconnectTimer = null;
+  // ---- モード状態（ゲートウェイ = このページの配信元 = 8800）--------------
+  // UIは常設ゲートウェイ(button_monitor)が配る。操縦のWS/映像は別ポート(pilot_port)。
+  var currentMode = null;     // "pilot" | "auto" | "off" | null(未取得)
+  var voiceState = null;      // "idle"|"listening"|"thinking"|"speaking"|null
+  var pilotPort = null;       // /mode 応答から取得（WS・/stream の接続先ポート）
+
   var overlay = document.getElementById("overlay");
   var dot = document.getElementById("dot");
+  var panes = document.getElementById("panes");
+  var modelabel = document.getElementById("modelabel");
+  var view = document.getElementById("view");
+  var viewImg = document.getElementById("viewImg");
 
+  // ---- WebSocket（操縦・pilot_port 宛て）----------------------------------
+  var ws = null, wsReady = false, reconnectTimer = null;
+
+  function updateOverlay() {
+    // 操縦モードでWS未接続のときだけ赤い切断オーバーレイ。非操縦時は出さない。
+    overlay.classList.toggle("show", currentMode === "pilot" && !wsReady);
+  }
   function setConnected(ok) {
     wsReady = ok;
-    overlay.classList.toggle("show", !ok);
     dot.classList.toggle("on", ok);
+    updateOverlay();
   }
 
   function connect() {
+    if (currentMode !== "pilot" || !pilotPort) return;   // 操縦モード以外は繋がない
     try {
-      ws = new WebSocket("ws://" + location.host + "/");
+      ws = new WebSocket("ws://" + location.hostname + ":" + pilotPort + "/");
     } catch (e) { scheduleReconnect(); return; }
     ws.onopen = function () { setConnected(true); };
-    ws.onclose = function () { setConnected(false); scheduleReconnect(); };
+    ws.onclose = function () { ws = null; setConnected(false); scheduleReconnect(); };
     ws.onerror = function () { try { ws.close(); } catch (e) {} };
     ws.onmessage = function () { /* 状態応答は今は表示に使わない */ };
   }
@@ -136,7 +176,7 @@
     if (reconnectTimer) return;
     reconnectTimer = setTimeout(function () {
       reconnectTimer = null;
-      connect();
+      connect();   // connect() 自身が非操縦モードでは no-op
     }, 800);
   }
   function send(obj) {
@@ -144,7 +184,92 @@
       try { ws.send(JSON.stringify(obj)); } catch (e) {}
     }
   }
-  connect();
+
+  // ---- 視界（任意機能・pilot_port 宛て）----------------------------------
+  // MJPEG(<img src>)。操縦モードのときだけ pilot_port の /stream を受ける。
+  // 読み込めれば画面上部1/3に表示、失敗/カメラ無し/非操縦時は隠して操作エリアを広げる。
+  var viewLoaded = false, viewTimer = null, viewActive = false, viewLastTry = 0;
+  viewImg.addEventListener("load", function () {
+    viewLoaded = true; view.classList.remove("hide");
+  });
+  viewImg.addEventListener("error", function () { view.classList.add("hide"); });
+
+  function tryStream() {
+    viewLoaded = false;
+    viewLastTry = Date.now();
+    // 再試行のたびにURLを変える（同一URLだとブラウザが失敗結果を使い回すことがある）
+    viewImg.src = "http://" + location.hostname + ":" + pilotPort + "/stream?t=" + viewLastTry;
+    if (viewTimer) clearTimeout(viewTimer);
+    viewTimer = setTimeout(function () {      // 一定時間フレームが来なければ隠す
+      if (!viewLoaded) view.classList.add("hide");
+    }, 4000);
+  }
+  function updateStream() {
+    if (currentMode === "pilot" && pilotPort) {
+      if (!viewActive) { viewActive = true; tryStream(); }
+      else if (!viewLoaded && Date.now() - viewLastTry > 5000) tryStream();  // 失敗中は約5秒ごと再試行
+    } else if (viewActive) {
+      viewActive = false;
+      if (viewTimer) { clearTimeout(viewTimer); viewTimer = null; }
+      view.classList.add("hide");
+      if (viewImg.getAttribute("src")) viewImg.removeAttribute("src");
+    }
+  }
+
+  // ---- モードのポーリング・表示・切替 -------------------------------------
+  var wakePending = false;   // ウェイク予約が未消費（自律モードの起動待ち等）
+  function labelFor(m, vs) {
+    if (m === "pilot") return "そうじゅうちゅう";
+    if (m === "off") return wakePending ? "おはなし じゅんびちゅう…" : "ていしちゅう";
+    if (m === "auto") {
+      if (vs === "listening" || vs === "thinking" || vs === "speaking") return "おはなしちゅう";
+      // 起動(Whisper読込)〜ウェイク消費までは数十秒かかるので「じゅんびちゅう」を出す
+      return wakePending ? "おはなし じゅんびちゅう…" : "じりつ（ウェイクまち）";
+    }
+    return "…";
+  }
+  function markActiveBtn(m) {
+    // ボタンの見た目上のアクティブ表示（wake は操作の性質上どのモードでも非アクティブ扱い）。
+    var map = { pilot: "pilot", auto: "auto" };
+    Array.prototype.forEach.call(document.querySelectorAll("#modebtns button"), function (b) {
+      b.classList.toggle("active", b.getAttribute("data-mode") === map[m]);
+    });
+  }
+  function applyMode(m, vs, port, wp) {
+    currentMode = m;
+    voiceState = vs;
+    wakePending = !!wp;
+    if (port) pilotPort = port;
+    modelabel.textContent = labelFor(m, vs);
+    markActiveBtn(m);
+    panes.classList.toggle("dim", m !== "pilot");   // 非操縦は薄暗く・操作不能
+    if (m === "pilot") { if (!ws) connect(); }
+    else { if (ws) { try { ws.close(); } catch (e) {} } }
+    updateStream();
+    updateOverlay();
+  }
+  function pollMode() {
+    fetch("/mode", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { applyMode(j.mode, j.voice_state, j.pilot_port, j.wake_pending); })
+      .catch(function () { /* ゲートウェイ不通: 次周期で再試行 */ });
+  }
+  function postMode(mode) {
+    modelabel.textContent = "きりかえちゅう…";   // 即時フィードバック（ポーリングが実状態で上書き）
+    fetch("/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: mode })
+    }).then(function () { pollMode(); }).catch(function () {});
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("#modebtns button"), function (b) {
+    b.addEventListener("pointerdown", function (ev) {
+      postMode(b.getAttribute("data-mode"));
+      ev.preventDefault(); ev.stopPropagation();
+    });
+  });
+  setInterval(pollMode, 2000);
+  pollMode();
 
   // ---- 走行ジョイスティック ----------------------------------------------
   var stickBase = document.getElementById("stickBase");
@@ -254,22 +379,6 @@
   document.addEventListener("dblclick", function (e) { e.preventDefault(); });
   window.addEventListener("contextmenu", function (e) { e.preventDefault(); });
   window.addEventListener("resize", updateKnob);
-
-  // ---- 視界（任意機能・操縦を阻害しない） --------------------------------
-  // MJPEG(<img src="/stream">)。読み込めれば画面上部1/3に表示、
-  // 失敗/カメラ無しなら自動で隠して操作エリアを全面に広げる。
-  // 映像処理はブラウザ任せでイベントループを塞がない。
-  var view = document.getElementById("view");
-  var viewImg = document.getElementById("viewImg");
-  var viewLoaded = false;
-  var viewTimer = setTimeout(function () {
-    if (!viewLoaded) view.classList.add("hide");   // 一定時間フレームが来なければ隠す
-  }, 4000);
-  viewImg.addEventListener("load", function () {
-    viewLoaded = true; view.classList.remove("hide");
-  });
-  viewImg.addEventListener("error", function () { view.classList.add("hide"); });
-  viewImg.src = "/stream";
 })();
 </script>
 </body>
