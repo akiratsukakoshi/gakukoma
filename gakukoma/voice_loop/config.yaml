@@ -78,6 +78,17 @@ motor:
   motor_a_invert: true       # 左モーター配線極性反転対応（実機テストで判明）
   motor_b_invert: false      # 実機テストで右は反転不要と判明
 
+# スマホ操縦モード設定（WP-A追加）
+pilot:
+  port: 8800          # 操縦サーバのHTTP/WebSocketポート
+  max_speed: 70       # キャタピラ速度の上限（%）。指令はこの値でクランプされる
+  deadman_ms: 300     # driveコマンドがこの時間途絶したら自動停止（デッドマン）
+  # 映像ストリーム（任意機能・操縦に必須ではない）。GET /stream で MJPEG を配信。
+  stream_width: 640   # 配信解像度・幅
+  stream_height: 360  # 配信解像度・高さ
+  stream_fps: 10      # 配信フレームレート（目安 8〜10）
+  stream_quality: 60  # JPEG品質（1〜100・目安60）
+
 # アイドル行動設定（Phase 5.1追加）
 idle_behavior:
   enabled: true

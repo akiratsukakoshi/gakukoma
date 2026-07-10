@@ -1,0 +1,19 @@
+[Unit]
+Description=GAKUKOMA smartphone pilot mode (drive server + UI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tukapontas
+# lgpio はカレントディレクトリに作業ファイル(.lgd-nfy*)を作るため、書き込み可能な場所を指定する
+WorkingDirectory=/home/tukapontas/gakukoma/pilot
+ExecStart=/usr/bin/python3 /home/tukapontas/gakukoma/pilot/pilot_server.py
+Restart=on-failure
+RestartSec=2
+# 停止時に stop + STBY off を確実に通すため SIGTERM に十分な猶予を与える
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target
