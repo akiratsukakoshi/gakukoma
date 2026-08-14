@@ -1,0 +1,17 @@
+[Unit]
+Description=GAKUKOMA Voice Loop
+After=network.target sound.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/tukapontas/gakukoma/voice_loop/voice_loop.py
+WorkingDirectory=/home/tukapontas/gakukoma/voice_loop
+User=tukapontas
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+Environment=PYTHONPATH=/home/tukapontas/gakukoma
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
