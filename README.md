@@ -178,10 +178,11 @@ gakukoma/
 └── camera/
     ├── see_around.py          # OpenCV + Claude Vision API
     ├── face_detect.py         # 顔検出（YuNet DNN / Haar Cascadeフォールバック）
-    ├── face_recognizer.py     # 顔認識（LBPH・多フレーム登録・YuNet共有）
+    ├── face_recognizer.py     # 顔認識（SFace埋め込み+cosine・多フレーム登録・YuNet共有）
     ├── capture.py             # カメラキャプチャ
     └── models/
-        └── face_detection_yunet_2023mar.onnx  # YuNet顔検出モデル（OpenCV Zoo）
+        ├── face_detection_yunet_2023mar.onnx       # YuNet顔検出モデル（OpenCV Zoo）
+        └── face_recognition_sface_2021dec.onnx     # SFace顔認識モデル（OpenCV Zoo）
 ```
 
 ---
@@ -320,7 +321,13 @@ GAKUKOMA_FAKE_GPIO=1 python3 gakukoma/pilot/pilot_server.py
 
 ### Phase 5.2：顔認識 + person-wiki ✅ 実装済み
 - **顔検出**: YuNet（DNN/ONNX）— Haar Cascadeより横顔・距離変化に強い
-- **顔認識**: OpenCV LBPH — 登録時15フレーム収集 × 9バリエ拡張（最大135サンプル）
+- **顔認識**: SFace（`cv2.FaceRecognizerSF` / ONNX 128次元埋め込み + cosine類似度、閾値0.363）
+  - モデル: `camera/models/face_recognition_sface_2021dec.onnx`（約37MB）
+  - 取得元: https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
+  - sha256: `0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79`
+  - データ: `camera/face_data/` に人物ごとの埋め込み（`sface_*.npz`）+ 台帳（`_sface_index.json`）
+  - 旧LBPHデータ（`_model.yml`/`_labels.txt`）は初回起動時に `face_data/lbph_backup/` へ自動退避（非破壊）。
+    LBPH→SFaceのデータ変換は不可能なため、**移行後は各人物の顔の再登録が必要**
 - `look_at_user()` 実行時に「誰か」を識別して名前で呼びかける
 - `register_face` ツール: 「がくこま、これが〇〇だよ」で顔登録
 - person-wiki（`memory/wiki/people/`）をOFFLINE処理で自動更新
