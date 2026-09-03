@@ -228,11 +228,18 @@
     }
     return "…";
   }
-  function markActiveBtn(m) {
-    // ボタンの見た目上のアクティブ表示（wake は操作の性質上どのモードでも非アクティブ扱い）。
-    var map = { pilot: "pilot", auto: "auto" };
+  function markActiveBtn(m, vs) {
+    // ボタンの見た目上のアクティブ表示。
+    // おはなしは「じりつの中の会話中状態」なので、会話中(listening/thinking/speaking)や
+    // ウェイク準備中は「おはなし」も点灯する（じりつと両方緑＝いま会話モード、が直感的）。
+    var talking = vs === "listening" || vs === "thinking" || vs === "speaking";
+    var wakeOn = wakePending || (m === "auto" && talking);
     Array.prototype.forEach.call(document.querySelectorAll("#modebtns button"), function (b) {
-      b.classList.toggle("active", b.getAttribute("data-mode") === map[m]);
+      var dm = b.getAttribute("data-mode");
+      var on = (dm === "pilot" && m === "pilot") ||
+               (dm === "auto" && m === "auto") ||
+               (dm === "wake" && wakeOn);
+      b.classList.toggle("active", on);
     });
   }
   function applyMode(m, vs, port, wp) {
@@ -241,7 +248,7 @@
     wakePending = !!wp;
     if (port) pilotPort = port;
     modelabel.textContent = labelFor(m, vs);
-    markActiveBtn(m);
+    markActiveBtn(m, vs);
     panes.classList.toggle("dim", m !== "pilot");   // 非操縦は薄暗く・操作不能
     if (m === "pilot") { if (!ws) connect(); }
     else { if (ws) { try { ws.close(); } catch (e) {} } }
