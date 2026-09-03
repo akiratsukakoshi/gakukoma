@@ -6,8 +6,13 @@ import os
 import re
 import sys
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from datetime import datetime
+
+# 同一の一時wav・同一ALSAデバイスを共有するため相互に直列必須なツール群（音声レーン）。
+# それ以外のツールはボディレーンとして音声レーンと並列に実行してよい。
+AUDIO_TOOLS = {"speak_text", "sing_song"}
 
 
 SYSTEM_PROMPT = """あなたはフィジカルAIロボット「がくこま」です。Raspberry Pi 5の上で動作し、音声で会話します。
@@ -26,6 +31,7 @@ SYSTEM_PROMPT = """あなたはフィジカルAIロボット「がくこま」�
 ツールはユーザーの明示的な指示、または自分が「確認したい・動きたい」と判断したときのみ使う。
 see_aroundの結果は「自分が見た景色」として一人称で話す。「〜という説明が返ってきた」ではなく「〜が見えた」。
 複合的な指示（「前進してから右に曲がって」「隣の部屋に行って確認して」など）は、ツールを順番に呼び出して達成する。一度に複数ステップを計画・実行してよい。
+移動しながら話したいときは、speak_textとmove_robotなどを1回の応答で同時に呼んでよい（並列に実行される）。
 
 探索・巡回・見回しなどの開放的な指示（「あたりを動き回って」「部屋を探索して」など）は、自分で計画を立ててmove_robotとsee_aroundを3〜5セット繰り返してから報告する。探索中はspeak_textで「前進するよ」「右を確認してみる」など実況してよい。ツール呼び出しは必要な回数だけ繰り返してよい（上限20回）。
 
@@ -277,9 +283,10 @@ class GAKUKOMABrain:
         戻り値は従来どおり最終ターンの全文で、履歴用に維持される。
         on_sentence を渡さない場合は従来どおり非ストリーミングで動く（後方互換）。
 
-        on_sentence が `flush()` を持つ場合、ツール実行の直前にそれを呼ぶ。
-        ツール(speak_text.sh 等)が音声デバイス/一時wavを使うため、実況の
-        読み上げが終わってからツールを走らせて順序と重なりを守る。
+        on_sentence が `flush()` を持つ場合、音声ツール（speak_text/sing_song）を
+        含むバッチの実行直前にそれを呼ぶ。音声ツールが音声デバイス/一時wavを
+        実況TTSと共有するため、読み上げを終わらせてから走らせて重なりを防ぐ。
+        音声ツールなしのバッチではフラッシュせず、実況とモーターは並行してよい。
         """
         # new_session() を経ずに呼ばれた場合の防御。未ロードならその場でロードする。
         if self._memory_snapshot is None:
@@ -598,19 +605,58 @@ class GAKUKOMABrain:
                     if on_sentence is not None:
                         on_sentence(give_up)
                     return give_up
-                # ツールは音声デバイスと一時wavを使い得る（speak_text.sh 等）。
-                # 実況の読み上げを終わらせてからツールを走らせ、順序を守る。
-                self._flush_speech(on_sentence)
-                tool_results = []
-                for block in response.content:
-                    if block.type == "tool_use":
-                        print(f"ツール実行: {block.name}({block.input})")
-                        output = self._execute_tool(block.name, block.input)
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": output
-                        })
+                tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+
+                # フラッシュ規律: 音声ツール（speak_text/sing_song）は実況TTSと同じ
+                # 一時wav・ALSAデバイスを使うため、実行前に発話キューを排出する。
+                # 音声ツールなしのバッチではフラッシュを省略する
+                # （実況TTSとモーターが重なるのは意図した仕様）。
+                has_audio = any(b.name in AUDIO_TOOLS for b in tool_use_blocks)
+                if has_audio:
+                    self._flush_speech(on_sentence)
+
+                # 2レーン方式: 音声レーン（AUDIO_TOOLS）とボディレーン（それ以外）に
+                # 元の順序を保って振り分ける。各レーン内はブロック順に直列、
+                # 2レーンは並列に走らせ「前進するよと言いながら前進」を実現する。
+                audio_lane = [b for b in tool_use_blocks if b.name in AUDIO_TOOLS]
+                body_lane = [b for b in tool_use_blocks if b.name not in AUDIO_TOOLS]
+
+                results_by_id = {}
+
+                def _run_lane(blocks):
+                    for blk in blocks:
+                        print(f"ツール実行: {blk.name}({blk.input})")
+                        try:
+                            results_by_id[blk.id] = self._execute_tool(blk.name, blk.input)
+                        except Exception as e:
+                            # スレッド内で例外が漏れても tool_result を欠かさない
+                            results_by_id[blk.id] = f"実行エラー: {e}"
+
+                if audio_lane and body_lane:
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        futures = [
+                            executor.submit(_run_lane, audio_lane),
+                            executor.submit(_run_lane, body_lane),
+                        ]
+                        for future in futures:
+                            try:
+                                future.result()
+                            except Exception as e:
+                                # _run_lane内で捕捉済みのはずの最後の防壁
+                                print(f"レーン実行エラー（無視）: {e}")
+                else:
+                    # 片レーンが空なら並列化せずインライン実行
+                    _run_lane(audio_lane or body_lane)
+
+                # tool_results は元のブロック順で組み立てる（tool_use_id対応を崩さない）
+                tool_results = [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": b.id,
+                        "content": results_by_id.get(b.id, "実行エラー: 結果が得られなかった"),
+                    }
+                    for b in tool_use_blocks
+                ]
                 messages.append({"role": "assistant", "content": response.content})
                 messages.append({"role": "user", "content": tool_results})
 

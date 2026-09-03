@@ -278,8 +278,9 @@ def test_a_sentence_callbacks():
 def test_b_tool_use_turn_no_loss_no_dup():
     pre = "ちょっと見てみるね。前を確認するよ。"
     post = "本棚が見えた。右は壁だったよ。"
+    # 音声ツールを使うのは新フラッシュ規律(音声含みバッチのみフラッシュ)のため
     turns = [
-        _turn([_TextBlock(pre), _ToolUseBlock("see_around", {})], stop_reason="tool_use"),
+        _turn([_TextBlock(pre), _ToolUseBlock("speak_text", {"text": "確認するね"})], stop_reason="tool_use"),
         _turn([_TextBlock(post)], stop_reason="end_turn"),
     ]
     b = _make_brain(turns)
@@ -303,7 +304,7 @@ def test_b_tool_use_turn_no_loss_no_dup():
            f"got={rec.sentences}")
     _check("(b) 欠落なし（連結が元テキストと一致）",
            "".join(rec.sentences) == pre + post)
-    _check("(b) ツールが1回実行された", executed == ["see_around"], f"got={executed}")
+    _check("(b) ツールが1回実行された", executed == ["speak_text"], f"got={executed}")
     _check("(b) 戻り値は最終ターンの全文", ret == post, f"got={ret!r}")
     _check("(b) 2ターン分 stream された", len(b.client.stream_calls) == 2,
            f"got={len(b.client.stream_calls)}")
