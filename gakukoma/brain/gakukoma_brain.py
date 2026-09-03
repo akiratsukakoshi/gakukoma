@@ -191,6 +191,52 @@ PRIMING_EXAMPLES = (
 
 MEMORY_DIR = Path("/home/tukapontas/gakukoma/memory")
 
+# brainのモデル。WP-Eでは変更しない（ストリーミング化のみ）。
+MODEL_ID = "claude-haiku-4-5-20251001"
+
+# 文の終端とみなす記号。voice_loop.speak() の分割規則と一致させること。
+SENTENCE_ENDINGS = "。！？"
+
+
+class SentenceSplitter:
+    """テキストのチャンクを受け取り、「。！？」で文が確定するたびにコールバックへ渡す。
+
+    ストリーミング応答は文の途中で切れたデルタが飛んでくるため、確定するまで
+    バッファに溜める。`flush()` は句読点で終わらない末尾テキスト（テキストブロック
+    の終端やターンの終端）を最後の1文として吐き出す。
+    バッファは吐き出すたびに消えるので、同じ文が二度渡ることはない。
+    """
+
+    def __init__(self, on_sentence):
+        self._on_sentence = on_sentence
+        self._buf = ""
+
+    def feed(self, chunk: str):
+        if not chunk:
+            return
+        self._buf += chunk
+        while True:
+            idx = -1
+            for i, ch in enumerate(self._buf):
+                if ch in SENTENCE_ENDINGS:
+                    idx = i
+                    break
+            if idx < 0:
+                return
+            sentence = self._buf[:idx + 1]
+            self._buf = self._buf[idx + 1:]
+            self._emit(sentence)
+
+    def flush(self):
+        rest = self._buf
+        self._buf = ""
+        self._emit(rest)
+
+    def _emit(self, sentence: str):
+        s = sentence.strip()
+        if s:
+            self._on_sentence(s)
+
 
 class GAKUKOMABrain:
     def __init__(self, config: dict):
@@ -223,12 +269,23 @@ class GAKUKOMABrain:
         # tools+system全体がプロンプトキャッシュに乗る）。
         self._memory_snapshot = self._load_memory_snapshot()
 
-    def invoke(self, user_text: str) -> str:
+    def invoke(self, user_text: str, on_sentence=None) -> str:
+        """LLMを1ターン回して応答テキストを返す。
+
+        on_sentence を渡すと応答をストリーミングで受け取り、「。！？」で文が
+        確定するたびに on_sentence(文) を呼ぶ（呼び出し側は文単位で発話できる）。
+        戻り値は従来どおり最終ターンの全文で、履歴用に維持される。
+        on_sentence を渡さない場合は従来どおり非ストリーミングで動く（後方互換）。
+
+        on_sentence が `flush()` を持つ場合、ツール実行の直前にそれを呼ぶ。
+        ツール(speak_text.sh 等)が音声デバイス/一時wavを使うため、実況の
+        読み上げが終わってからツールを走らせて順序と重なりを守る。
+        """
         # new_session() を経ずに呼ばれた場合の防御。未ロードならその場でロードする。
         if self._memory_snapshot is None:
             self._memory_snapshot = self._load_memory_snapshot()
         message = self._build_message(user_text)
-        response = self._call_api(message)
+        response = self._call_api(message, on_sentence=on_sentence)
         self.local_history.append((user_text, response))
         return response
 
@@ -444,7 +501,53 @@ class GAKUKOMABrain:
         except Exception as e:
             return f"実行エラー: {e}"
 
-    def _call_api(self, message: str) -> str:
+    @staticmethod
+    def _flush_speech(on_sentence):
+        """発話キューの排出を要求する（on_sentence が flush() を持つ場合のみ）。"""
+        flush = getattr(on_sentence, "flush", None)
+        if callable(flush):
+            try:
+                flush()
+            except Exception as e:
+                print(f"発話フラッシュ失敗（無視）: {e}")
+
+    def _print_usage(self, usage):
+        print(f"Tokens: input={usage.input_tokens}, "
+              f"cache_create={getattr(usage, 'cache_creation_input_tokens', 0)}, "
+              f"cache_read={getattr(usage, 'cache_read_input_tokens', 0)}, "
+              f"output={usage.output_tokens}")
+
+    def _stream_turn(self, system_blocks, messages, on_sentence):
+        """1ターンをストリーミングで受け取り、文が確定するたび on_sentence に渡す。
+
+        戻り値は完全な Message（tool loop は従来どおり content/stop_reason で回せる）。
+        テキストブロックの終端(content_block_stop)ごとに flush するため、句読点で
+        終わらないテキストも取りこぼさない。
+        """
+        splitter = SentenceSplitter(on_sentence)
+        with self.client.messages.stream(
+            model=MODEL_ID,
+            max_tokens=512,
+            system=system_blocks,
+            tools=TOOLS,
+            messages=messages,
+        ) as stream:
+            for event in stream:
+                etype = getattr(event, "type", None)
+                if etype == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    if getattr(delta, "type", None) == "text_delta":
+                        splitter.feed(getattr(delta, "text", "") or "")
+                elif etype == "content_block_stop":
+                    # テキストブロックが閉じた時点で末尾の未確定分を確定させる。
+                    # tool_use ブロックの終端ではバッファが空なので何も起きない。
+                    splitter.flush()
+            response = stream.get_final_message()
+        # ストリームが content_block_stop を出さない実装でも取りこぼさないための保険。
+        splitter.flush()
+        return response
+
+    def _call_api(self, message: str, on_sentence=None) -> str:
         # 記憶スナップショット未設定時の防御（invoke経由なら通常は設定済み）。
         if self._memory_snapshot is None:
             self._memory_snapshot = self._load_memory_snapshot()
@@ -472,24 +575,32 @@ class GAKUKOMABrain:
         MAX_TOOL_ITERATIONS = 20
 
         while True:
-            response = self.client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=512,
-                system=system_blocks,
-                tools=TOOLS,
-                messages=messages
-            )
+            if on_sentence is None:
+                # 後方互換パス: 従来どおり非ストリーミングで1ターン取得する。
+                response = self.client.messages.create(
+                    model=MODEL_ID,
+                    max_tokens=512,
+                    system=system_blocks,
+                    tools=TOOLS,
+                    messages=messages
+                )
+            else:
+                response = self._stream_turn(system_blocks, messages, on_sentence)
 
-            usage = response.usage
-            print(f"Tokens: input={usage.input_tokens}, "
-                  f"cache_create={getattr(usage, 'cache_creation_input_tokens', 0)}, "
-                  f"cache_read={getattr(usage, 'cache_read_input_tokens', 0)}, "
-                  f"output={usage.output_tokens}")
+            self._print_usage(response.usage)
 
             if response.stop_reason == "tool_use":
                 tool_call_count += 1
                 if tool_call_count >= MAX_TOOL_ITERATIONS:
-                    return "たくさん動いたよ。そろそろ休憩する。"
+                    give_up = "たくさん動いたよ。そろそろ休憩する。"
+                    # 呼び出し側は on_sentence 使用時 戻り値を発話しないため、
+                    # この打ち切りメッセージもコールバック経由で発話させる。
+                    if on_sentence is not None:
+                        on_sentence(give_up)
+                    return give_up
+                # ツールは音声デバイスと一時wavを使い得る（speak_text.sh 等）。
+                # 実況の読み上げを終わらせてからツールを走らせ、順序を守る。
+                self._flush_speech(on_sentence)
                 tool_results = []
                 for block in response.content:
                     if block.type == "tool_use":

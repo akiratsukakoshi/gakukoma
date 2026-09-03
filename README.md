@@ -44,6 +44,9 @@ voice_loop.py  ── メインループ（4ステートマシン: idle/listenin
     │
     ├─ STT: faster-whisper（small / tiny）
     ├─ TTS: Open JTalk（meiモデル・タチコマ声質）
+    │      └─ SentenceSpeaker: 文単位のキュー＋発話ワーカー（WP-E）
+    │         LLM応答をストリーミングで受け、「。！？」で文が確定するたびに発話開始。
+    │         全文待ちをしないので体感レイテンシが縮む（順序はFIFOで保証）。
     ├─ Wakeword: 「おはよう」で起動 / 「おやすみ」でスリープ
     ├─ VAD: webrtcvad による自動発話検出
     ├─ LED: RGB LED ステート可視化
@@ -54,6 +57,8 @@ voice_loop.py  ── メインループ（4ステートマシン: idle/listenin
     └─ GAKUKOMABrain（brain/gakukoma_brain.py）
            │
            ├─ Anthropic API（claude-haiku-4-5）直接呼び出し
+           │   └─ invoke(text, on_sentence=...) でストリーミング応答（WP-E）
+           │      ツール実行前の実況テキストも文が確定し次第そのまま発話へ流す
            ├─ Tool Use: look_direction / see_around / move_robot / ...
            ├─ few-shot priming（セッション初回のみ）
            ├─ ローカル会話履歴（直近3ターン）
@@ -393,4 +398,4 @@ rm -rf /home/tukapontas/gakukoma/brain/
 
 ---
 
-*最終更新: 2026-07-11（スマホからのモード可視化・3状態切替＝WP-D：常設ゲートウェイ8800＋操縦サーバ8801分離・UI左下モードウィジェット・「おはなし」ウェイク注入）*
+*最終更新: 2026-09-03（WP-E：ストリーミング応答＋文単位TTS。brain.invoke の on_sentence コールバックで「。！？」ごとに発話開始。計測ログ `[LATENCY] 認識完了→初回発話開始`）*

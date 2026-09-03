@@ -5,6 +5,8 @@ import yaml
 import re
 import time
 import wave
+import queue
+import threading
 import collections
 import random
 import numpy as np
@@ -88,6 +90,74 @@ def speak(text, tts_engine):
         if s.strip():
             print(f"GAKUKOMA: {s.strip()}")
             tts_engine.speak(s.strip())
+
+class SentenceSpeaker:
+    """brain のストリーミングから届いた文を、順序を保ったまま裏で発話するワーカー。
+
+    brain.invoke(text, on_sentence=speaker) の on_sentence として直接渡せるよう
+    callable にしてある。__call__ はキューに積むだけで即座に返るので、TTS
+    (open_jtalk + aplay で1文あたり1〜3秒)がストリーム消費をブロックしない。
+    発話はワーカースレッド1本のFIFOなので順序は保証される。
+
+    初回の発話が実際に始まる直前に on_first_speech() を1回だけ呼ぶ
+    （状態を speaking にする・レイテンシ計測ログを出すのはここ）。
+    """
+
+    def __init__(self, tts_engine, on_first_speech=None):
+        self._tts = tts_engine
+        self._on_first_speech = on_first_speech
+        self._queue = queue.Queue()
+        self._first_done = False
+        self.spoke_any = False   # 1文でもキューに積んだか（二重発話の抑止判定に使う）
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._worker, daemon=True, name="tts-speaker"
+        )
+        self._thread.start()
+
+    def __call__(self, sentence):
+        """確定した1文を発話キューに積む（brain の on_sentence コールバック）。"""
+        if self._closed:
+            return
+        cleaned = clean_text_for_tts(sentence or "")
+        if not cleaned:
+            return
+        self.spoke_any = True
+        self._queue.put(cleaned)
+
+    def _worker(self):
+        while True:
+            item = self._queue.get()
+            try:
+                if item is None:      # 終了センチネル
+                    return
+                if not self._first_done:
+                    self._first_done = True
+                    if self._on_first_speech:
+                        try:
+                            self._on_first_speech()
+                        except Exception as e:
+                            print(f"発話開始フック失敗（無視）: {e}")
+                print(f"GAKUKOMA: {item}")
+                try:
+                    self._tts.speak(item)
+                except Exception as e:
+                    print(f"TTS失敗（1文スキップ）: {e}")
+            finally:
+                self._queue.task_done()
+
+    def flush(self):
+        """積まれた文をすべて言い終わるまで待つ（brain がツール実行前に呼ぶ）。"""
+        self._queue.join()
+
+    def close(self):
+        """残りを言い終えてからワーカーを終了させる。"""
+        if self._closed:
+            return
+        self._closed = True
+        self._queue.put(None)
+        self._thread.join()
+
 
 class VoiceLoop:
     def __init__(self, config):
@@ -474,13 +544,39 @@ class VoiceLoop:
             result.append(seg.text)
         return "".join(result).strip()
 
-    def call_brain(self, text: str) -> str:
+    def call_brain(self, text: str, on_sentence=None) -> str:
+        """brain を回して全文を返す。
+
+        on_sentence を渡すと文単位のコールバックつきで回す（呼び出し側は
+        戻り値を発話しない）。エラー時のお詫びもコールバック経由で発話させ、
+        「コールバックを使ったのに一言も出ない」状態を作らない。
+        """
         print("考え中...")
         try:
-            return self.brain.invoke(text)
+            if on_sentence is None:
+                return self.brain.invoke(text)
+            return self.brain.invoke(text, on_sentence=on_sentence)
         except Exception as e:
             print(f"Error calling brain: {e}")
-            return "すみません、エラーが発生しました。"
+            apology = "すみません、エラーが発生しました。"
+            if on_sentence is not None:
+                try:
+                    on_sentence(apology)
+                except Exception as e2:
+                    print(f"お詫びの発話に失敗（無視）: {e2}")
+            return apology
+
+    def _begin_speaking(self, since=None):
+        """初文の発話開始時点の遷移: speaking へ + 発話ジェスチャー + レイテンシ計測。
+
+        since は「認識完了(transcribe後)」の時刻(time.monotonic)。実機ACのため、
+        認識完了→初回aplay開始の時刻差を1行だけログに出す。
+        """
+        self._set_state("speaking")
+        if self._gesture:
+            self._gesture.start_speaking()
+        if since is not None:
+            print(f"[LATENCY] 認識完了→初回発話開始: {time.monotonic() - since:.2f}s")
 
     def run(self):
         speak("がくこまが起動しました。", self.tts_engine)
@@ -550,6 +646,7 @@ class VoiceLoop:
                             self._gesture.start_thinking()
                         print("[THINKING] 認識中...")
                         text = self.transcribe(self.audio_file, model_type="small")
+                        recognized_at = time.monotonic()   # 認識完了（レイテンシ計測の起点）
 
                         if not text:
                             print("（認識不能な音声）")
@@ -572,12 +669,21 @@ class VoiceLoop:
                             self._collapse_to_idle("おやすみなさい")
                             continue
 
-                        response = self.call_brain(text)
-                        self._set_state("speaking")
-                        # スピーキングジェスチャー開始（speak() は同期なのでバックグラウンドで実行）
-                        if self._gesture:
-                            self._gesture.start_speaking()
-                        speak(response, self.tts_engine)
+                        # ストリーミング応答: 文が確定するたびに speaker が発話を始める。
+                        # 全文待ちをしないので体感レイテンシが縮む。
+                        speaker = SentenceSpeaker(
+                            self.tts_engine,
+                            on_first_speech=lambda: self._begin_speaking(recognized_at),
+                        )
+                        try:
+                            response = self.call_brain(text, on_sentence=speaker)
+                        finally:
+                            speaker.close()   # 残りを言い終えるまで待つ
+                        # 二重発話禁止: コールバックが1文でも喋っていれば speak() しない。
+                        # ストリームから1文も出なかった場合だけ従来経路で救済する。
+                        if not speaker.spoke_any and response:
+                            self._begin_speaking(recognized_at)
+                            speak(response, self.tts_engine)
                         # 発話終了後: ジェスチャー停止 → 正面に戻る
                         if self._gesture:
                             self._gesture.go_center()
