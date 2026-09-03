@@ -233,7 +233,8 @@
     // おはなしは「じりつの中の会話中状態」なので、会話中(listening/thinking/speaking)や
     // ウェイク準備中は「おはなし」も点灯する（じりつと両方緑＝いま会話モード、が直感的）。
     var talking = vs === "listening" || vs === "thinking" || vs === "speaking";
-    var wakeOn = wakePending || (m === "auto" && talking);
+    // 操縦中は wake_pending(未消費の予約残骸)があっても「おはなし」を点灯しない
+    var wakeOn = (m === "auto" && talking) || (m !== "pilot" && wakePending);
     Array.prototype.forEach.call(document.querySelectorAll("#modebtns button"), function (b) {
       var dm = b.getAttribute("data-mode");
       var on = (dm === "pilot" && m === "pilot") ||

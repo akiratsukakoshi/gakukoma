@@ -157,6 +157,13 @@ def apply_mode(requested):
     ホワイトリスト2サービス（gakukoma / gakukoma-pilot）だけを操作する。
     """
     if requested == "pilot":
+        # 操縦への切替は未消費のウェイク予約(おはなし)の取り消しを含む。
+        # 残骸が残ると wake_pending が立ちっぱなしになり、UIの「おはなし」点灯や
+        # 後日の自律起動時の直行動作を汚すため、ここで必ず掃除する。
+        try:
+            os.remove(WAKE_TRIGGER_FILE)
+        except OSError:
+            pass
         # 排他: gakukoma 停止 → pilot 起動（既に pilot active なら no-op）
         if _is_active(PILOT_SERVICE):
             return

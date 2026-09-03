@@ -197,10 +197,28 @@ def test_b_post_transitions(env):
     wake_ok = (code == 200 and sp.calls == [("start", "gakukoma")] and
                os.path.exists(env.bm.WAKE_TRIGGER_FILE))
 
-    _check("(b) POST遷移3種の systemctl呼出列 + トリガー生成",
-           pilot_ok and auto_switch_ok and auto_sleep_ok and wake_ok,
+    # pilot: 未消費の wake_trigger は切替時に取り消される（残骸掃除）
+    sp = env.set_active("gakukoma")
+    env.clear_triggers()
+    open(env.bm.WAKE_TRIGGER_FILE, "w").close()
+    code, _ = env.req("POST", "/mode", {"mode": "pilot"})
+    pilot_clean_ok = (code == 200 and
+                      not os.path.exists(env.bm.WAKE_TRIGGER_FILE))
+
+    # pilot: 既に pilot active（no-op遷移）でも残骸掃除だけは行われる
+    sp = env.set_active("gakukoma-pilot")
+    env.clear_triggers()
+    open(env.bm.WAKE_TRIGGER_FILE, "w").close()
+    code, _ = env.req("POST", "/mode", {"mode": "pilot"})
+    pilot_clean_noop_ok = (code == 200 and sp.calls == [] and
+                           not os.path.exists(env.bm.WAKE_TRIGGER_FILE))
+
+    _check("(b) POST遷移3種の systemctl呼出列 + トリガー生成/掃除",
+           pilot_ok and auto_switch_ok and auto_sleep_ok and wake_ok and
+           pilot_clean_ok and pilot_clean_noop_ok,
            f"pilot={pilot_ok} auto_switch={auto_switch_ok} "
-           f"auto_sleep={auto_sleep_ok} wake={wake_ok}")
+           f"auto_sleep={auto_sleep_ok} wake={wake_ok} "
+           f"pilot_clean={pilot_clean_ok} pilot_clean_noop={pilot_clean_noop_ok}")
 
 
 # ---------------------------------------------------------------------------
