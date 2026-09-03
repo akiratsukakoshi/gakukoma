@@ -38,6 +38,19 @@ SLEEP_TRIGGER_FILE = os.path.join(RUN_DIR, "sleep_trigger")
 TRIGGER_TTL_SEC = 120
 
 
+def _fresh_trigger_pending(path):
+    """トリガーが存在し鮮度内なら True。消費(削除)はしない（peekのみ）。
+
+    「おはなし」起動の検知に使う: ゲートウェイは gakukoma.service を start した
+    直後に wake_trigger を書くため、起動時にこれが新鮮なら「ウェイク注入つき起動」
+    と判定できる。実際の消費は run() 側が行う。
+    """
+    try:
+        return (time.time() - os.path.getmtime(path)) <= TRIGGER_TTL_SEC
+    except OSError:
+        return False
+
+
 def _install_sigterm_handler():
     """SIGTERM を KeyboardInterrupt に変換して正常終了フローを通す"""
     def _handler(signum, frame):
@@ -163,7 +176,16 @@ class VoiceLoop:
     def __init__(self, config):
         self.config = config
         self.tts_engine = OpenJTalkTTS()
-        
+
+        # 「おはなし」(ウェイク注入)つき起動の検知（WP-K）。
+        # Whisperモデルの読込(実機で十数秒)より前に返事だけ先に発話することで、
+        # スマホでおはなしを押してから無音の時間を数秒に縮める。
+        # トリガーの消費(削除)は run() 冒頭で行う（ここではpeekのみ）。
+        self._wake_on_start = _fresh_trigger_pending(WAKE_TRIGGER_FILE)
+        if self._wake_on_start:
+            print("ウェイク注入つき起動を検知 → 起動アナウンスを省略して先に返事する")
+            speak("はい、なんでしょう", self.tts_engine)
+
         # Load STT Models
         print("STTモデル(small)をロード中...")
         self.stt_model = WhisperModel("small", device="cpu", compute_type="int8")
@@ -238,13 +260,34 @@ class VoiceLoop:
             return False
         return age <= TRIGGER_TTL_SEC
 
-    def _enter_active_from_wake(self):
-        """ウェイク（ワード検知 / スマホ注入）共通の遷移: 返事 + new_session + listening。"""
+    def _enter_active_from_wake(self, greet=True):
+        """ウェイク（ワード検知 / スマホ注入）共通の遷移: 返事 + new_session + listening。
+
+        greet=False は「おはなし」起動用（返事は __init__ でモデル読込前に発話済み）。
+        """
         self._idle_start = None
-        speak("はい、なんでしょう", self.tts_engine)
+        if greet:
+            speak("はい、なんでしょう", self.tts_engine)
         self.brain.new_session()
         self._set_state("listening")
         self._consecutive_failures = 0
+
+    def _startup_greeting(self):
+        """起動時の第一声（run() 冒頭）。
+
+        ウェイク注入つき起動（_wake_on_start）なら「がくこまが起動しました」を
+        省略し、トリガーを消費して IDLE を経由せず会話待ち受けへ直行する。
+        返事「はい、なんでしょう」は __init__ で発話済みのため二重に言わない。
+        通常起動なら従来どおり起動アナウンスのみ。
+        """
+        if getattr(self, "_wake_on_start", False):
+            try:
+                os.remove(WAKE_TRIGGER_FILE)
+            except OSError:
+                pass
+            self._enter_active_from_wake(greet=False)
+        else:
+            speak("がくこまが起動しました。", self.tts_engine)
 
     def _collapse_to_idle(self, farewell):
         """会話終了共通の畳み方: end_session + 別れの一言 + idle + 首を正面へ。
@@ -579,8 +622,8 @@ class VoiceLoop:
             print(f"[LATENCY] 認識完了→初回発話開始: {time.monotonic() - since:.2f}s")
 
     def run(self):
-        speak("がくこまが起動しました。", self.tts_engine)
-        
+        self._startup_greeting()
+
         # 従来のEnterキー方式
         if not self.config["wakeword"]["enabled"] and not self.config["vad"]["enabled"]:
             self.run_manual()
